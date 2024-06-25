@@ -1,5 +1,4 @@
 # Adapted from https://github.com/radarFudan/mamba-minimal-jax/blob/main/model.py
-
 """Simple, minimal implementation of Mamba in one file of Jax.
 
 Suggest reading the following before/while reading the code:
@@ -35,41 +34,40 @@ from flax import linen as nn
 
 from func_utils import *
 
+
 @dataclass
-class ModelArgs: # The same as torch version since this does not have any torch specific code
+class ModelArgs:  # The same as torch version since this does not have any torch specific code
     d_model: int
-    layer_idx: int
-    # vocab_size: int
+    norm_eps: float = 1e-5
+    rms_norm: bool = False
     d_state: int = 16
     expand: int = 2
     dt_rank: Union[int, str] = 'auto'
     d_conv: int = 4
-    # pad_vocab_size_multiple: int = 8
     conv_bias: bool = True
     bias: bool = False
-    
+
     def __post_init__(self):
         self.d_inner = int(self.expand * self.d_model)
-        
+
         if self.dt_rank == 'auto':
             self.dt_rank = math.ceil(self.d_model / 16)
-            
-        # if self.vocab_size % self.pad_vocab_size_multiple != 0:
-        #     self.vocab_size += (self.pad_vocab_size_multiple
-        #                         - self.vocab_size % self.pad_vocab_size_multiple)
 
 
 class ResidualBlock(nn.Module):
-    args:ModelArgs
-    drop_prob: float = 0.
-    # include other necessary parameters from ModelArgs if needed
+    args: ModelArgs
+    drop_path: float = 0.1
 
     def setup(self):
         """Full Mamba model."""
         super().__init__()
         self.mixer = MambaBlock(self.args)
-        self.norm = RMSNorm(self.args.d_model)
-        self.dropper = DropPathV2(drop_prob=self.drop_prob) if self.drop_prob > 0. else Identity()
+        self.norm = RMSNorm(
+            self.args.d_model,
+            eps=self.args.norm_eps) if self.args.rms_norm else nn.LayerNorm(
+                epsilon=self.args.norm_eps)
+        self.dropper = DropPathV2(
+            drop_prob=self.drop_path) if self.drop_path > 0. else Identity()
 
     @nn.compact
     def __call__(self, x, drop_key, training=False):
@@ -93,7 +91,8 @@ class ResidualBlock(nn.Module):
                 [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> ....
             
         """
-        output = self.mixer(self.norm(x)) + self.dropper(x, drop_key=drop_key, training=training)
+        output = self.mixer(self.norm(x)) + self.dropper(
+            x, drop_key=drop_key, training=training)
         return output
 
 
@@ -101,29 +100,34 @@ class MambaBlock(nn.Module):
     args: ModelArgs
 
     def setup(self):
-        self.in_proj = nn.Dense(features=self.args.d_inner * 2, 
-                                kernel_init=normal(), 
+        self.in_proj = nn.Dense(features=self.args.d_inner * 2,
+                                kernel_init=normal(),
                                 use_bias=self.args.bias)
-        
+
         # Adjusted for Flax. Flax does not have nn.Conv1d, so you might need to reshape or use a different approach
-        self.conv1d = nn.Conv(features=self.args.d_inner,
-                              kernel_size=[self.args.d_conv],
-                              feature_group_count=self.args.d_inner,
-                              padding=self.args.d_conv - 1,
-                              use_bias=self.args.conv_bias,
-                              )
+        self.conv1d = nn.Conv(
+            features=self.args.d_inner,
+            kernel_size=[self.args.d_conv],
+            feature_group_count=self.args.d_inner,
+            padding=self.args.d_conv - 1,
+            use_bias=self.args.conv_bias,
+        )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
-        self.x_proj = nn.Dense(self.args.dt_rank + self.args.d_state * 2, use_bias=False)
-        
+        self.x_proj = nn.Dense(self.args.dt_rank + self.args.d_state * 2,
+                               use_bias=False)
+
         # dt_proj projects Δ from dt_rank to d_in
         self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
 
-        A = np.tile(np.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
-        self.A_log = self.param('A_log', lambda rng, shape: np.log(A), (self.args.d_inner, self.args.d_state))
-        self.D = self.param('D', nn.initializers.ones, (self.args.d_inner,))
-        self.out_proj = nn.Dense(self.args.d_model, kernel_init=normal(), use_bias=self.args.bias)
-
+        A = np.tile(np.arange(1, self.args.d_state + 1),
+                    (self.args.d_inner, 1))
+        self.A_log = self.param('A_log', lambda rng, shape: np.log(A),
+                                (self.args.d_inner, self.args.d_state))
+        self.D = self.param('D', nn.initializers.ones, (self.args.d_inner, ))
+        self.out_proj = nn.Dense(self.args.d_model,
+                                 kernel_init=normal(),
+                                 use_bias=self.args.bias)
 
     def __call__(self, x):
         """Mamba block forward. This looks the same as Figure 3 in Section 3.4 in the Mamba paper [1].
@@ -143,22 +147,25 @@ class MambaBlock(nn.Module):
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
 
-        # The split_size is converted to the indices_or_sections method, notice the difference! 
-        (x, res) = np.split(x_and_res, indices_or_sections=[self.args.d_inner,], axis=-1)
+        # The split_size is converted to the indices_or_sections method, notice the difference!
+        (x, res) = np.split(x_and_res,
+                            indices_or_sections=[
+                                self.args.d_inner,
+                            ],
+                            axis=-1)
 
-        # TODO, summarize the difference between torch and jax convolution! 
+        # TODO, summarize the difference between torch and jax convolution!
         x = self.conv1d(x)[:, :l, :]
 
         x = jax.nn.silu(x)
 
         y = self.ssm(x)
-        
+
         y = y * jax.nn.silu(res)
-        
+
         output = self.out_proj(y)
 
         return output
-
 
     def ssm(self, x):
         """Runs the SSM. See:
@@ -181,21 +188,25 @@ class MambaBlock(nn.Module):
         #     A, D are input independent (see Mamba paper [1] Section 3.5.2 "Interpretation of A" for why A isn't selective)
         #     ∆, B, C are input-dependent (this is a key difference between Mamba and the linear time invariant S4,
         #                                  and is why Mamba is called **selective** state spaces)
-        
+
         # TODO, There is a type conversion to float in the torch version s
         A = -np.exp(self.A_log)  # shape (d_in, n)
         D = self.D
 
         x_dbl = self.x_proj(x)  # (b, l, dt_rank + 2*n)
 
-        # The split_size is converted to the indices_or_sections method, notice the difference! 
-        (delta, B, C) = np.split(x_dbl, indices_or_sections=[self.args.dt_rank, self.args.dt_rank+n], axis=-1)  # delta: (b, l, dt_rank). B, C: (b, l, n)
+        # The split_size is converted to the indices_or_sections method, notice the difference!
+        (delta, B, C) = np.split(
+            x_dbl,
+            indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
+            axis=-1)  # delta: (b, l, dt_rank). B, C: (b, l, n)
         delta = jax.nn.softplus(self.dt_proj(delta))  # (b, l, d_in)
-        
-        y = self.selective_scan(x, delta, A, B, C, D)  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
-        
-        return y
 
+        y = self.selective_scan(
+            x, delta, A, B, C, D
+        )  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
+
+        return y
 
     def selective_scan(self, u, delta, A, B, C, D):
         """Does selective scan algorithm. See:
@@ -233,13 +244,13 @@ class MambaBlock(nn.Module):
 
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
         x = np.zeros((b, d_in, n))
-        ys = []    
+        ys = []
         for i in range(l):
             x = deltaA[:, i] * x + deltaB_u[:, i]
             y = np.einsum('b d n, b n -> b d', x, C[:, i, :])
             ys.append(y)
         y = np.stack(ys, axis=1)  # shape (b, l, d_in)
-        
+
         y = y + u * D
 
         return y
@@ -247,7 +258,7 @@ class MambaBlock(nn.Module):
 
 if __name__ == '__main__':
     # Test for RMSNorm
-    
+
     # Generate a random example input
     rng = jax.random.PRNGKey(0)
     input_shape = (10, 20)  # example shape
