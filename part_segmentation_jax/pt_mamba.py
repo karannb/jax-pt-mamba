@@ -504,7 +504,7 @@ class PointMamba(nn.Module):
 
 
 def get_model(
-    config: PointMambaArgs, num_classes: int
+    config: PointMambaArgs, num_classes: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
     input_key, model_key, fps_key = random.split(random.PRNGKey(0), 3)
@@ -517,9 +517,10 @@ def get_model(
     variables = model.init(
         model_key, pts=dummy_x, fps_key=fps_key, cls_label=dummy_cls, training=False
     )
-
-    # Print the model parameters
-    printParams(variables["params"])
+    
+    if verbose:
+        # Print the model parameters
+        printParams(variables["params"])
 
     # Print number of parameters, taken from
     # https://github.com/google/jax/discussions/6153
