@@ -450,47 +450,49 @@ class PointMamba(nn.Module):
 
         # Run the Mamba model
         features_list = self.blocks(x=group_input_tokens, pos=pos, training=training)
+        # (B, G*3, d_model) * len(fetch_idx)
 
         features_list = [
             customTranspose(self.post_norm(feature)) for feature in features_list
         ]
         x = jnp.concatenate(features_list, axis=1)  # (B, d_model*len(fetch_idx), G*3)
-        # for default case, G*3 == d_model*len(fetch_idx) == 1152
 
-        x_max = jnp.max(x, axis=2)
-        x_avg = jnp.mean(x, axis=2)
+        x_max = jnp.max(x, axis=2)  # (B, d_model*len(fetch_idx)), max_pooling
+        x_avg = jnp.mean(x, axis=2)  # mean_pooling
         x_max_feature = expand_dims(x_max.reshape(B, -1), dimensions=[-1]).repeat(
             repeats=N, axis=-1
         )
         x_avg_feature = expand_dims(x_avg.reshape(B, -1), dimensions=[-1]).repeat(
             repeats=N, axis=-1
         )
+        # (B, d_model*len(fetch_idx), N)
 
         # Need to tell the model about the class label so it can segment parts
-        cls_label_one_hot = cls_label.reshape(B, 16)
+        cls_label_one_hot = cls_label.reshape(B, 1, 16)
         cls_label_one_hot = customSequential(
             x=cls_label_one_hot,
             layers=self.label_conv,
             training=training,
             **{"negative_slope": self.config.leaky_relu_slope},
         )
+        cls_label_feature = customTranspose(cls_label_one_hot.repeat(repeats=N, axis=1))
+        # (B, 64, N)
 
-        cls_label_feature = expand_dims(cls_label_one_hot, dimensions=[-1]).repeat(
-            repeats=N, axis=-1
-        )
         x_global_feature = jnp.concatenate(
-            (x_max_feature, x_avg_feature, cls_label_feature), 1
+            (x_max_feature, x_avg_feature, cls_label_feature), axis=1
         )
+        # (B, d_model*len(fetch_idx)*2 + 64, N)
 
         # Propagate the features through a PointNet
         f_level_0 = self.propagation_0(
             customTranspose(pts), customTranspose(center), customTranspose(pts), x
         )
+        # (B, G + 3, N)
 
         # Post-process using simple NN layers
-        x = jnp.concatenate((f_level_0, x_global_feature), 1)
+        x = jnp.concatenate((f_level_0, x_global_feature), axis=1) # (B, d_model*len(fetch_idx)*2 + 64 + G + 3, N)
         x = customSequential(
-            x=x,
+            x=customTranspose(x),
             layers=self.post_layers,
             training=training,
             **{"negative_slope": self.config.leaky_relu_slope},
@@ -498,7 +500,7 @@ class PointMamba(nn.Module):
 
         # Final pred
         x = nn.log_softmax(x, axis=1)
-        x = jnp.transpose(x, (0, 2, 1))
+        x = customTranspose(x)
 
         return x
 
@@ -517,7 +519,7 @@ def get_model(
     variables = model.init(
         model_key, pts=dummy_x, fps_key=fps_key, cls_label=dummy_cls, training=False
     )
-    
+
     if verbose:
         # Print the model parameters
         printParams(variables["params"])
@@ -535,9 +537,16 @@ if __name__ == "__main__":
     mamba_conf = ModelArgs(d_model=384)
     new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
     model, params = get_model(new_conf, num_classes=16)
-    
+
     fps_key, dropout_key, droppath_key = random.split(random.PRNGKey(0), 3)
     x = jnp.ones((10, 3, 1024))
     cls = jax.nn.one_hot(jnp.ones(10, dtype=jnp.int32), 16)
-    out = model.apply(params, pts=x, cls_label=cls, fps_key=fps_key, training=True, rngs={"dropout": dropout_key, "droppath": droppath_key})
+    out = model.apply(
+        params,
+        pts=x,
+        cls_label=cls,
+        fps_key=fps_key,
+        training=True,
+        rngs={"dropout": dropout_key, "droppath": droppath_key},
+    )
     print(out.shape)
