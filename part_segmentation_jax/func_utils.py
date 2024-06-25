@@ -1,4 +1,5 @@
 import jax
+import flax
 from jax import random
 import jax.numpy as jnp
 from jax._src.basearray import Array
@@ -9,57 +10,55 @@ from flax import linen as nn
 
 
 def knn(ref: Array, query: Array, k: int):
-    '''
+    """
     Compute k-neighbourhood for each point in query from
     ref.
-    
+
     Args:
         ref: (B, N, 3)
         This is the set of non-fps sampled points, basically
         the whole point cloud.
-        
+
         query: (B, fps_num, 3)
         This is the set of fps samples points.
-        
+
         k: int
         Number of ref points per query points, i.e.,
         what should be considered the neightbourhood of each
         query point.
-        
+
     Returns:
         idx: (B, fps_num, k)
         Returns the indices of k-closest neighbours of each
         query point.
-    '''
+    """
 
-    dist_matrix = jnp.linalg.norm(query[:, :, None, :] - ref[:, None, :, :],
-                                  axis=-1)
+    dist_matrix = jnp.linalg.norm(query[:, :, None, :] - ref[:, None, :, :], axis=-1)
     inds = jnp.argsort(dist_matrix, axis=-1)
     return inds[:, :, :k]
 
 
-def sort_select_and_concat(operand: Array,
-                           indices: List[List],
-                           ind_axis: int = -1,
-                           axis: int = 1) -> Array:
+def sort_select_and_concat(
+    operand: Array, indices: List[List], ind_axis: int = -1, axis: int = 1
+) -> Array:
 
     ovr_features = []
     for ind in indices:
 
-        feature = jnp.take_along_axis(operand,
-                                      jnp.repeat(ind,
-                                                 repeats=operand.shape[-1],
-                                                 axis=ind_axis),
-                                      axis=axis)
+        feature = jnp.take_along_axis(
+            operand,
+            jnp.repeat(ind, repeats=operand.shape[-1], axis=ind_axis),
+            axis=axis,
+        )
         ovr_features.append(feature)
 
-    return jnp.concat(ovr_features, axis=axis)
+    return jnp.concatenate(ovr_features, axis=axis)
 
 
 def custom_transpose(x: Array):
-    '''
+    """
     Courtesy of ChatGPT.
-    '''
+    """
 
     # Get the total number of dimensions in the array
     num_axes = x.ndim
@@ -76,10 +75,17 @@ def custom_transpose(x: Array):
     return reversed_axes_array
 
 
-def drop_path(x: Array,
-              drop_prob: float = 0.,
-              key: random.PRNGKey = None,
-              training: bool = False):
+def print_params(params, prefix=""):
+    for key, value in params.items():
+        if isinstance(value, dict) or isinstance(value, flax.core.FrozenDict):
+            print_params(value, prefix=prefix + key + "/")
+        else:
+            print(f"{prefix}{key}: {value.shape}")
+
+
+def drop_path(
+    x: Array, drop_prob: float = 0.0, key: random.PRNGKey = None, training: bool = False
+):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
@@ -89,10 +95,10 @@ def drop_path(x: Array,
     'survival rate' as the argument.
 
     """
-    if drop_prob == 0. or not training:
+    if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0], ) + (1, ) * (x.ndim - 1)
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
     random_tensor = keep_prob + random.uniform(key, shape, dtype=x.dtype)
     random_tensor = jnp.floor(random_tensor)  # binarize
     output = jnp.divide(x, keep_prob) * random_tensor
@@ -100,8 +106,8 @@ def drop_path(x: Array,
 
 
 class DropPathV2(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
-    """
+    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
+
     drop_prob: float = None
 
     @nn.compact
@@ -142,9 +148,10 @@ class RMSNorm(nn.Module):
     @nn.compact
     def __call__(self, x):
         weight = self.param(
-            'weight', nn.initializers.ones,
-            (self.d_model, ))  # TODO, maybe use setup will be more clear
+            "weight", nn.initializers.ones, (self.d_model,)
+        )  # TODO, maybe use setup will be more clear
         normed = x * jax.lax.rsqrt(
-            np.mean(np.square(x), axis=-1, keepdims=True) + self.eps)
+            np.mean(np.square(x), axis=-1, keepdims=True) + self.eps
+        )
         output = normed * weight
         return output
