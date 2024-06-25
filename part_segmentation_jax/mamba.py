@@ -42,7 +42,7 @@ class ModelArgs:  # The same as torch version since this does not have any torch
     rms_norm: bool = False
     d_state: int = 16
     expand: int = 2
-    dt_rank: Union[int, str] = 'auto'
+    dt_rank: Union[int, str] = "auto"
     d_conv: int = 4
     conv_bias: bool = True
     bias: bool = False
@@ -50,7 +50,7 @@ class ModelArgs:  # The same as torch version since this does not have any torch
     def __post_init__(self):
         self.d_inner = int(self.expand * self.d_model)
 
-        if self.dt_rank == 'auto':
+        if self.dt_rank == "auto":
             self.dt_rank = math.ceil(self.d_model / 16)
 
 
@@ -62,26 +62,28 @@ class ResidualBlock(nn.Module):
         """Full Mamba model."""
         super().__init__()
         self.mixer = MambaBlock(self.args)
-        self.norm = RMSNorm(
-            self.args.d_model,
-            eps=self.args.norm_eps) if self.args.rms_norm else nn.LayerNorm(
-                epsilon=self.args.norm_eps)
-        self.dropper = DropPathV2(
-            drop_prob=self.drop_path) if self.drop_path > 0. else Identity()
+        self.norm = (
+            RMSNorm(self.args.d_model, eps=self.args.norm_eps)
+            if self.args.rms_norm
+            else nn.LayerNorm(epsilon=self.args.norm_eps)
+        )
+        self.dropper = (
+            DropPathV2(drop_prob=self.drop_path) if self.drop_path > 0.0 else Identity()
+        )
 
     @nn.compact
-    def __call__(self, x, drop_key, training=False):
+    def __call__(self, x, training=False):
         """
         Args:
             x: shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
-            
-    
+
+
         Returns:
             output: shape (b, l, d)
 
         Official Implementation:
             Block.forward(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba_simple.py#L297
-            
+
             Note: the official repo chains residual blocks that look like
                 [Add -> Norm -> Mamba] -> [Add -> Norm -> Mamba] -> [Add -> Norm -> Mamba] -> ...
             where the first Add is a no-op. This is purely for performance reasons as this
@@ -89,10 +91,9 @@ class ResidualBlock(nn.Module):
 
             We instead implement our blocks as the more familiar, simpler, and numerically equivalent
                 [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> ....
-            
+
         """
-        output = self.mixer(self.norm(x)) + self.dropper(
-            x, drop_key=drop_key, training=training)
+        output = self.mixer(self.norm(x)) + self.dropper(x, training=training)
         return output
 
 
@@ -100,9 +101,11 @@ class MambaBlock(nn.Module):
     args: ModelArgs
 
     def setup(self):
-        self.in_proj = nn.Dense(features=self.args.d_inner * 2,
-                                kernel_init=normal(),
-                                use_bias=self.args.bias)
+        self.in_proj = nn.Dense(
+            features=self.args.d_inner * 2,
+            kernel_init=normal(),
+            use_bias=self.args.bias,
+        )
 
         # Adjusted for Flax. Flax does not have nn.Conv1d, so you might need to reshape or use a different approach
         self.conv1d = nn.Conv(
@@ -114,45 +117,50 @@ class MambaBlock(nn.Module):
         )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
-        self.x_proj = nn.Dense(self.args.dt_rank + self.args.d_state * 2,
-                               use_bias=False)
+        self.x_proj = nn.Dense(
+            self.args.dt_rank + self.args.d_state * 2, use_bias=False
+        )
 
         # dt_proj projects Δ from dt_rank to d_in
         self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
 
-        A = np.tile(np.arange(1, self.args.d_state + 1),
-                    (self.args.d_inner, 1))
-        self.A_log = self.param('A_log', lambda rng, shape: np.log(A),
-                                (self.args.d_inner, self.args.d_state))
-        self.D = self.param('D', nn.initializers.ones, (self.args.d_inner, ))
-        self.out_proj = nn.Dense(self.args.d_model,
-                                 kernel_init=normal(),
-                                 use_bias=self.args.bias)
+        A = np.tile(np.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
+        self.A_log = self.param(
+            "A_log",
+            lambda rng, shape: np.log(A),
+            (self.args.d_inner, self.args.d_state),
+        )
+        self.D = self.param("D", nn.initializers.ones, (self.args.d_inner,))
+        self.out_proj = nn.Dense(
+            self.args.d_model, kernel_init=normal(), use_bias=self.args.bias
+        )
 
     def __call__(self, x):
         """Mamba block forward. This looks the same as Figure 3 in Section 3.4 in the Mamba paper [1].
-    
+
         Args:
             x: shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
-    
+
         Returns:
             output: shape (b, l, d)
-        
+
         Official Implementation:
             class Mamba, https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba_simple.py#L119
             mamba_inner_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L311
-            
+
         """
         (b, l, d) = x.shape
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
-        (x, res) = np.split(x_and_res,
-                            indices_or_sections=[
-                                self.args.d_inner,
-                            ],
-                            axis=-1)
+        (x, res) = np.split(
+            x_and_res,
+            indices_or_sections=[
+                self.args.d_inner,
+            ],
+            axis=-1,
+        )
 
         # TODO, summarize the difference between torch and jax convolution!
         x = self.conv1d(x)[:, :l, :]
@@ -174,13 +182,13 @@ class MambaBlock(nn.Module):
 
         Args:
             x: shape (b, l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
-    
+
         Returns:
             output: shape (b, l, d_in)
 
         Official Implementation:
             mamba_inner_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L311
-            
+
         """
         (d_in, n) = self.A_log.shape
 
@@ -199,7 +207,8 @@ class MambaBlock(nn.Module):
         (delta, B, C) = np.split(
             x_dbl,
             indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
-            axis=-1)  # delta: (b, l, dt_rank). B, C: (b, l, n)
+            axis=-1,
+        )  # delta: (b, l, dt_rank). B, C: (b, l, n)
         delta = jax.nn.softplus(self.dt_proj(delta))  # (b, l, d_in)
 
         y = self.selective_scan(
@@ -218,7 +227,7 @@ class MambaBlock(nn.Module):
             x(t + 1) = Ax(t) + Bu(t)
             y(t)     = Cx(t) + Du(t)
         except B and C (and the step size delta, which is used for discretization) are dependent on the input x(t).
-    
+
         Args:
             u: shape (b, l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
             delta: shape (b, l, d_in)
@@ -226,53 +235,31 @@ class MambaBlock(nn.Module):
             B: shape (b, l, n)
             C: shape (b, l, n)
             D: shape (d_in,)
-    
+
         Returns:
             output: shape (b, l, d_in)
-    
+
         Official Implementation:
             selective_scan_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L86
             Note: I refactored some parts out of `selective_scan_ref` out, so the functionality doesn't match exactly.
-            
+
         """
         (b, l, d_in) = u.shape
         n = A.shape[1]
 
         # Discretize continuous parameters (A, B)
-        deltaA = np.exp(np.einsum('b l d, d n -> b l d n', delta, A))
-        deltaB_u = np.einsum('b l d, b l n, b l d -> b l d n', delta, B, u)
+        deltaA = np.exp(np.einsum("b l d, d n -> b l d n", delta, A))
+        deltaB_u = np.einsum("b l d, b l n, b l d -> b l d n", delta, B, u)
 
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
         x = np.zeros((b, d_in, n))
         ys = []
         for i in range(l):
             x = deltaA[:, i] * x + deltaB_u[:, i]
-            y = np.einsum('b d n, b n -> b d', x, C[:, i, :])
+            y = np.einsum("b d n, b n -> b d", x, C[:, i, :])
             ys.append(y)
         y = np.stack(ys, axis=1)  # shape (b, l, d_in)
 
         y = y + u * D
 
         return y
-
-
-if __name__ == '__main__':
-    # Test for RMSNorm
-
-    # Generate a random example input
-    rng = jax.random.PRNGKey(0)
-    input_shape = (10, 20)  # example shape
-    x = jax.random.normal(rng, input_shape)
-
-    # Initialize the model
-    d_model = 20  # should match the last dimension of the input
-    rms_norm = RMSNorm(d_model=d_model)
-
-    # Initialize parameters
-    params = rms_norm.init(rng, x)
-
-    # Apply the model
-    output = rms_norm.apply(params, x)
-
-    print("Input:", x)
-    print("Output:", output)

@@ -1,20 +1,28 @@
+# jax imports
 import jax
-import flax
 from jax import random
 import jax.numpy as jnp
+from jax._src import prng
 from jax._src.basearray import Array
 
+# other imports
+import flax
 import numpy as np
-from typing import List
 from flax import linen as nn
+from flax.core import FrozenDict
+from typing import List, Union, Dict, Any, Optional
+
+# type definitions
+KeyArray = prng.PRNGKeyArray
 
 
-def knn(ref: Array, query: Array, k: int):
+def knn(ref: Array, query: Array, k: int) -> Array:
     """
     Compute k-neighbourhood for each point in query from
     ref.
 
-    Args:
+    Args
+    ----
         ref: (B, N, 3)
         This is the set of non-fps sampled points, basically
         the whole point cloud.
@@ -27,10 +35,11 @@ def knn(ref: Array, query: Array, k: int):
         what should be considered the neightbourhood of each
         query point.
 
-    Returns:
+    Returns
+    -------
         idx: (B, fps_num, k)
         Returns the indices of k-closest neighbours of each
-        query point.
+        query point from the ref points set.
     """
 
     dist_matrix = jnp.linalg.norm(query[:, :, None, :] - ref[:, None, :, :], axis=-1)
@@ -38,26 +47,48 @@ def knn(ref: Array, query: Array, k: int):
     return inds[:, :, :k]
 
 
-def sort_select_and_concat(
-    operand: Array, indices: List[List], ind_axis: int = -1, axis: int = 1
-) -> Array:
+def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> None:
+    """
+    Recursively print the parameters of a model with names and shapes.
 
-    ovr_features = []
-    for ind in indices:
+    Args
+    ----
+        params: Union[Dict[str, Any], FrozenDict]
+        The parameters of a model.
 
-        feature = jnp.take_along_axis(
-            operand,
-            jnp.repeat(ind, repeats=operand.shape[-1], axis=ind_axis),
-            axis=axis,
-        )
-        ovr_features.append(feature)
+        prefix: str
+        The prefix to be used while printing the parameters.
+        Helps to keep track of the nested parameters.
 
-    return jnp.concatenate(ovr_features, axis=axis)
+    Returns
+    -------
+        None
+    """
+    for key, value in params.items():
+        if isinstance(value, dict) or isinstance(value, flax.core.FrozenDict):
+            printParams(value, prefix=prefix + key + "/")
+        else:
+            print(f"{prefix}{key}: {value.shape}")
+
+    return
 
 
-def custom_transpose(x: Array):
+def customTranspose(x: Array) -> Array:
     """
     Courtesy of ChatGPT.
+    Transpose the last two axes of an array.
+    basically, jnp.transpose(x, (-2, -1)), but this
+    is not supported in flax.
+
+    Args
+    ----
+        x: Array
+        The input array.
+
+    Returns
+    -------
+        reversed_axes_array: Array
+        The array with the last two axes transposed.
     """
 
     # Get the total number of dimensions in the array
@@ -75,17 +106,79 @@ def custom_transpose(x: Array):
     return reversed_axes_array
 
 
-def print_params(params, prefix=""):
-    for key, value in params.items():
-        if isinstance(value, dict) or isinstance(value, flax.core.FrozenDict):
-            print_params(value, prefix=prefix + key + "/")
+def customSequential(
+    x: Array, layers: List[nn.Module], training: bool = False, **kwargs
+) -> Array:
+    """
+    This utility prevents from the overuse of separate flags
+    everywhere in the code for training and testing.
+    Each module can just call this function.
+    """
+
+    for layer in layers:
+        if isinstance(layer, nn.BatchNorm):
+            x = layer(x, use_running_average=training)
+
+        elif isinstance(layer, nn.Dropout):
+            x = layer(x, deterministic=not training)
+
+        elif layer == nn.leaky_relu:
+            assert (
+                "negative_slope" in kwargs
+            ), "Leaky ReLU requires negative_slope in kwargs."
+            x = layer(x, negative_slope=kwargs["negative_slope"])
+
         else:
-            print(f"{prefix}{key}: {value.shape}")
+            x = layer(x)
+
+    return x
+
+
+def sortSelectAndConcat(
+    operand: Array, indices: List[List], aux_axis: int = -1, ind_axis: int = 1
+) -> Array:
+    """
+    This function is used during reordering of the features.
+
+    Args
+    ----
+        operand: Array, (B, G, C) usually
+        The feature tensor that needs to be reordered.
+
+        indices: List[List], List of [(B, G, 1)] usually
+        The indices with which the features need to be reordered.
+
+        aux_axis: int
+        The extra axis along which the indices will be repeated.
+        NOTE: Might need jnp.tile if there are additional axes
+        (> 1).
+
+        ind_axis: int
+        The axis along which the sorted features will be concatenated.
+        Useful only if len(indices) > 1. This is also the indexed axis.
+
+    Returns
+    -------
+        ovr_features: Array, (B, G*len(indices), C)
+        The reordered (and concatenated) features tensor.
+    """
+
+    ovr_features = []
+    for ind in indices:
+
+        feature = jnp.take_along_axis(
+            operand,
+            jnp.repeat(ind, repeats=operand.shape[-1], axis=aux_axis),
+            axis=ind_axis,
+        )
+        ovr_features.append(feature)
+
+    return jnp.concatenate(ovr_features, axis=ind_axis)
 
 
 def drop_path(
-    x: Array, drop_prob: float = 0.0, key: random.PRNGKey = None, training: bool = False
-):
+    x: Array, drop_prob: float = 0.0, key: KeyArray = None, training: bool = False
+) -> Array:
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
@@ -94,6 +187,8 @@ def drop_path(
     changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
     'survival rate' as the argument.
 
+    Minimal reproduction in Jax of the original function used as
+    `from timm.models.layers import DropPath`
     """
     if drop_prob == 0.0 or not training:
         return x
@@ -106,17 +201,56 @@ def drop_path(
 
 
 class DropPathV2(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
+    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
+
+    Minimal reproduction in Jax of the original function used as
+    `from timm.models.layers import DropPath`
+    """
 
     drop_prob: float = None
+    rng_collection: str = "droppath"
 
     @nn.compact
-    def __call__(self, x, drop_key, training):
-        return drop_path(x, self.drop_prob, drop_key, training)
+    def __call__(
+        self, x: Array, training: bool = False, rng: Optional[KeyArray] = None
+    ) -> Array:
+        """
+        NOTE: this function drops along the batch dimension.
+
+        Args
+        ----
+            x: Array
+            The input tensor.
+
+            drop_key: KeyArray
+            The random key for dropping a residual.
+
+            training: bool
+            Whether the model is in training mode or not.
+            Without training, the drop path will not be applied.
+
+        Returns
+        -------
+            output: Array
+            The output tensor after applying drop path.
+        """
+        
+        if self.drop_prob == 0.0 or not training:
+            return x
+        
+        if rng is None:
+            dropPath_key = self.make_rng(self.rng_collection)
+        
+        return drop_path(
+            x=x, drop_prob=self.drop_prob, key=dropPath_key, training=training
+        )
 
 
 class Identity(nn.Module):
     r"""A placeholder identity operator that is argument-insensitive.
+    Minimal reproduction in Jax of the original function used as
+    nn.Identity()
+    in PyTorch.
 
     Args:
         args: any argument (unused)
@@ -138,15 +272,36 @@ class Identity(nn.Module):
 
     @nn.compact
     def __call__(self, input: Array, *args, **kwargs) -> Array:
+        """
+        Always returns the input tensor as it is.
+        args and kwargs are added to make it compatible with other modules.
+        """
         return input
 
 
 class RMSNorm(nn.Module):
+    """
+    Taken from https://github.com/radarFudan/mamba-minimal-jax/blob/main/model.py#L344
+    as is.
+    """
+
     d_model: int
     eps: float = 1e-5
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x: Array) -> Array:
+        """
+        Args
+        ----
+            x: Array
+            The input tensor.
+
+        Returns
+        -------
+            output: Array
+            The output tensor after applying RMSNorm.
+        """
+
         weight = self.param(
             "weight", nn.initializers.ones, (self.d_model,)
         )  # TODO, maybe use setup will be more clear
