@@ -29,10 +29,15 @@ import jax
 import jax.numpy as jnp
 from jax.nn.initializers import normal
 
-import flax
 from flax import linen as nn
 
-from part_segmentation_jax.func_utils import *
+from part_segmentation_jax.func_utils import (
+    Identity,
+    RMSNorm,
+    DropPathV2,
+    KeyArray,
+    Array,
+)
 
 
 @dataclass
@@ -72,7 +77,7 @@ class ResidualBlock(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, x, training=False):
+    def __call__(self, x: Array, drop_key: KeyArray, training=False):
         """
         Args:
             x: shape (l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
@@ -93,7 +98,9 @@ class ResidualBlock(nn.Module):
                 [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> ....
 
         """
-        output = self.mixer(self.norm(x)) + self.dropper(x, training=training)
+        output = self.mixer(self.norm(x)) + self.dropper(
+            x, drop_key=drop_key, training=training
+        )
         return output
 
 

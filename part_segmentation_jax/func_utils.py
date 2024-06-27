@@ -210,7 +210,7 @@ class DropPathV2(nn.Module):
     drop_prob: float = None
 
     @nn.compact
-    def __call__(self, x: Array, training: bool = False) -> Array:
+    def __call__(self, x: Array, drop_key: KeyArray, training: bool = False) -> Array:
         """
         NOTE: this function drops along the batch dimension.
 
@@ -238,11 +238,16 @@ class DropPathV2(nn.Module):
         # NOTE :  This is a hack because before vmap I don't have access to the
         # batch dimension. So, I am just taking a key from numpy random and
         # using it as the key for the drop path.
-        completely_random_key = np.random.randint(0, 100000, (1,))
-        dropPath_key = self.make_rng(completely_random_key[0])
-
+        # completely_random_key = np.random.randint(0, 100000, (1,))
+        # dropPath_key = self.make_rng(completely_random_key[0])
+        # DOESN'T WORK!
+        # Solution: make a batched key object at the start and keep passing it.
+        
+        if self.drop_prob > 0.0 and drop_key is None:
+            raise ValueError("DropPathV2 requires a PRNGKey to be passed.")
+        
         return drop_path(
-            x=x, drop_prob=self.drop_prob, key=dropPath_key, training=training
+            x=x, drop_prob=self.drop_prob, key=drop_key, training=training
         )
 
 
