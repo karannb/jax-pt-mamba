@@ -67,11 +67,12 @@ def index_points(points: Array, idx: Array) -> Array:
     return new_points
 
 
-def farthest_point_sample(xyz: Array, fps_key: KeyArray, npoint: int) -> Array:
+def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
     """
     Input:
         xyz: pointcloud data, [N, 3]
         npoint: number of samples
+        fps_key: random key
     Return:
         centroids: sampled pointcloud index, [npoint]
     """

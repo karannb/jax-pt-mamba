@@ -180,7 +180,8 @@ class Group(nn.Module):
         center = fps(pc, number=self.num_group, key=key)  # (G, 3)
         idx = self.knn(ref=pc, query=center)  # (G, M)
 
-        assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
+        # assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
+        # this assert was not helpful at all!
         assert idx.shape[0] == self.num_group, f"idx.shape[1] : {idx.shape[0]}"
         assert idx.shape[1] == self.group_size, f"idx.shape[2] : {idx.shape[1]}"
 
@@ -332,9 +333,7 @@ class MixerModelForSegmentation(nn.Module):
 
         for i, layer in enumerate(self.layers):
             # Split the key for drop path in each layer
-            used_keys, drop_path_key = jnp.stack(
-                [random.split(drop_path_key[a], 2) for a in range(x.shape[0])]
-            )
+            used_keys, drop_path_key = random.split(drop_path_key)
             hidden_states = layer(
                 hidden_states,
                 used_keys,
@@ -526,7 +525,6 @@ class PointMamba(nn.Module):
 
         # Final pred
         x = nn.log_softmax(x, axis=1)
-        x = customTranspose(x)
 
         return x
 
@@ -568,17 +566,20 @@ if __name__ == "__main__":
     mamba_conf = ModelArgs(d_model=384)
     new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
     model, params = get_model(new_conf, num_classes=16)
-
-    fps_key, dropout_key, drop_path_key = random.split(random.PRNGKey(0), 3)
-    x = jnp.ones((3, 1024))
-    cls = jax.nn.one_hot(jnp.ones(10, dtype=jnp.int32), 16)
-    out = model.apply(
-        params,
-        pts=x,
-        cls_label=cls,
-        fps_key=fps_key,
-        drop_path_key=drop_path_key,
-        training=True,
-        rngs={"dropout": dropout_key},
-    )
+    
+    # Check for vmap
+    
+    ## Prep. i/p
+    x = jnp.ones((100, 3, 1024))
+    cls = jax.nn.one_hot(jnp.ones(100, dtype=jnp.int32), 16)
+    
+    ## Prep. keys
+    fps_key, drop_path_key, dropout_key = random.split(random.PRNGKey(0), 3)
+    drop_path_keys = random.split(drop_path_key, x.shape[0])
+    fps_keys = random.split(fps_key, x.shape[0])
+    
+    ## Create a vmapped apply function
+    dropped_apply = jax.tree_util.Partial(model.apply, rngs={"dropout": dropout_key})
+    vmapped_apply = jax.vmap(dropped_apply, in_axes=(None, 0, 0, 0, 0, None))
+    out = vmapped_apply(params, x, cls, fps_keys, drop_path_keys, True) # {"dropout": dropout_key}
     print(out.shape)

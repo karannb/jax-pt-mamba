@@ -10,7 +10,8 @@ import flax
 import numpy as np
 from flax import linen as nn
 from flax.core import FrozenDict
-from typing import List, Union, Dict, Any, Optional
+# from scipy.spatial import cKDTree
+from typing import List, Union, Dict, Any
 
 # type definitions
 KeyArray = prng.PRNGKeyArray
@@ -44,9 +45,15 @@ def knn(ref: Array, query: Array, k: int) -> Array:
 
     dist_matrix = jnp.linalg.norm(query[:, None, :] - ref[None, :, :], axis=-1)
     inds = jnp.argsort(dist_matrix, axis=-1)
-    # NOTE :  check out https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.cKDTree.html
-    # if the above method is slow.
     return inds[:, :k]
+    
+    # NOTE : check out https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.cKDTree.html
+    # if the above method is slow.
+    # CHECKED And used! about 100x faster than the above method. But doesn't work with vmap :/
+    
+    # tree = cKDTree(ref)
+    # _, idx = tree.query(query, k=k)
+    # return idx
 
 
 def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> None:
