@@ -4,12 +4,12 @@ import jax.numpy as jnp
 from jax._src import prng
 from jax._src.basearray import Array
 
-from typing import Any, Union, Tuple
-
-KeyArray = Union[Array, prng.PRNGKeyArray]
-
+import numpy as np
 import flax.linen as nn
 
+from typing import Union, Tuple
+
+KeyArray = Union[Array, prng.PRNGKeyArray]
 
 def pc_normalize(pc: Array) -> Array:
     """
@@ -53,48 +53,51 @@ def square_distance(src: Array, dst: Array) -> Array:
 def index_points(points: Array, idx: Array) -> Array:
     """
     Input:
-        points: input points data, [B, N, C]
-        idx: sample index data, [B, S]
+        points: input points data, [N, C]
+        idx: sample index data, [S, ]
     Return:
-        new_points:, indexed points data, [B, S, C]
+        new_points:, indexed points data, [S, C]
     """
-    B = idx.shape[0]
-
-    broadcast_shape = list(idx.shape)
-    broadcast_shape[1:] = [1] * (len(broadcast_shape) - 1)
-    batch_indices = jnp.arange(0, B, 1).reshape(*broadcast_shape)
-
-    tile_shape = list(idx.shape)
-    tile_shape[0] = 1
-    batch_indices = jnp.tile(batch_indices, tile_shape)
-
-    new_points = points[batch_indices, idx, :]
+    # NOTE: this isn't needed if everything is 1D
+    # But, I have kept it around not to change too 
+    # much of the code.
+    
+    new_points = points[idx, :]
     return new_points
 
 
-def farthest_point_sample(xyz: Array, npoint: int, key: KeyArray):
+def farthest_point_sample(xyz: Array, npoint: int) -> Array:
     """
     Input:
-        xyz: pointcloud data, [B, N, 3]
+        xyz: pointcloud data, [N, 3]
         npoint: number of samples
-        key: JAX random key
     Return:
-        centroids: sampled pointcloud index, [B, npoint]
+        centroids: sampled pointcloud index, [npoint]
     """
 
-    B, N, C = xyz.shape
-    centroids = jnp.zeros((B, npoint), dtype=jnp.int32)
-    distance = jnp.ones((B, N)) * 1e10
-    key, subkey = random.split(key)
-    farthest = random.randint(subkey, (B,), 0, N)
-    batch_indices = jnp.arange(B, dtype=jnp.int32)
-
-    def body_fn(i: int, val: Tuple):
+    N, C = xyz.shape
+    
+    # Initialize the centroids as the zeroth point
+    centroids = jnp.zeros((npoint, ), dtype=jnp.int32)
+    
+    # Set the distance to each point as infinity (very large number)
+    distance = jnp.ones((N, )) * 1e10
+    
+    # Randomly select the farthest point
+    farthest = jnp.array(np.random.randint(low=0, high=N))
+    
+    def body_fn(i: int, val: Tuple[Array, Array, Array]):
+        # Unpack the values
         centroids, distance, farthest = val
-        centroids = centroids.at[:, i].set(farthest)
-        centroid = xyz[batch_indices, farthest, :].reshape(B, 1, C)
+        # Set current centroid as the farthest point
+        centroids = centroids.at[i].set(farthest)
+        # Get the coordinates of the current centroid
+        centroid = xyz[farthest, :].reshape(1, C)
+        # Calculate the Euclidean distance between the current centroid and all other points
         dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
+        # Update the distance to the nearest centroid for each point
         distance = jnp.where(dist < distance, dist, distance)
+        # Get the index of the farthest point
         farthest = jnp.argmax(distance, axis=-1)
         return centroids, distance, farthest
 

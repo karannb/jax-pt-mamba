@@ -122,7 +122,7 @@ def fps(data: Array, number: int, key: KeyArray) -> Array:
 
     Args
     ----
-        data: Array, shape=[B, N, C] usually
+        data: Array, shape=[N, C] usually
         The input data.
 
         number: int
@@ -133,7 +133,7 @@ def fps(data: Array, number: int, key: KeyArray) -> Array:
 
     Returns
     -------
-        fps_data: Array, shape=[B, number, C]
+        fps_data: Array, shape=[number, C]
         The farthest point sampled data.
     """
 
