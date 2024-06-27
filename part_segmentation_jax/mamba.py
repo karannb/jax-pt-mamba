@@ -26,7 +26,7 @@ from typing import Union
 from dataclasses import dataclass
 
 import jax
-import jax.numpy as np
+import jax.numpy as jnp
 from jax.nn.initializers import normal
 
 import flax
@@ -124,10 +124,10 @@ class MambaBlock(nn.Module):
         # dt_proj projects Δ from dt_rank to d_in
         self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
 
-        A = np.tile(np.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
+        A = jnp.tile(jnp.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
         self.A_log = self.param(
             "A_log",
-            lambda rng, shape: np.log(A),
+            lambda rng, shape: jnp.log(A),
             (self.args.d_inner, self.args.d_state),
         )
         self.D = self.param("D", nn.initializers.ones, (self.args.d_inner,))
@@ -139,22 +139,22 @@ class MambaBlock(nn.Module):
         """Mamba block forward. This looks the same as Figure 3 in Section 3.4 in the Mamba paper [1].
 
         Args:
-            x: shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
+            x: shape (l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
 
         Returns:
-            output: shape (b, l, d)
+            output: shape (l, d)
 
         Official Implementation:
             class Mamba, https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba_simple.py#L119
             mamba_inner_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L311
 
         """
-        (b, l, d) = x.shape
+        (l, d) = x.shape
 
-        x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
+        x_and_res = self.in_proj(x)  # shape (l, 2 * d_in)
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
-        (x, res) = np.split(
+        (x, res) = jnp.split(
             x_and_res,
             indices_or_sections=[
                 self.args.d_inner,
@@ -163,7 +163,7 @@ class MambaBlock(nn.Module):
         )
 
         # TODO, summarize the difference between torch and jax convolution!
-        x = self.conv1d(x)[:, :l, :]
+        x = self.conv1d(x)[:l, :]
 
         x = jax.nn.silu(x)
 
@@ -181,10 +181,10 @@ class MambaBlock(nn.Module):
             - run_SSM(A, B, C, u) in The Annotated S4 [2]
 
         Args:
-            x: shape (b, l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
+            x: shape (l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
 
         Returns:
-            output: shape (b, l, d_in)
+            output: shape (l, d_in)
 
         Official Implementation:
             mamba_inner_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L311
@@ -198,18 +198,18 @@ class MambaBlock(nn.Module):
         #                                  and is why Mamba is called **selective** state spaces)
 
         # TODO, There is a type conversion to float in the torch version s
-        A = -np.exp(self.A_log)  # shape (d_in, n)
+        A = -jnp.exp(self.A_log)  # shape (d_in, n)
         D = self.D
 
-        x_dbl = self.x_proj(x)  # (b, l, dt_rank + 2*n)
+        x_dbl = self.x_proj(x)  # (l, dt_rank + 2*n)
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
-        (delta, B, C) = np.split(
+        (delta, B, C) = jnp.split(
             x_dbl,
             indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
             axis=-1,
-        )  # delta: (b, l, dt_rank). B, C: (b, l, n)
-        delta = jax.nn.softplus(self.dt_proj(delta))  # (b, l, d_in)
+        )  # delta: (l, dt_rank). B, C: (l, n)
+        delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
             x, delta, A, B, C, D
@@ -229,36 +229,36 @@ class MambaBlock(nn.Module):
         except B and C (and the step size delta, which is used for discretization) are dependent on the input x(t).
 
         Args:
-            u: shape (b, l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
-            delta: shape (b, l, d_in)
+            u: shape (l, d_in)    (See Glossary at top for definitions of b, l, d_in, n...)
+            delta: shape (l, d_in)
             A: shape (d_in, n)
-            B: shape (b, l, n)
-            C: shape (b, l, n)
+            B: shape (l, n)
+            C: shape (l, n)
             D: shape (d_in,)
 
         Returns:
-            output: shape (b, l, d_in)
+            output: shape (l, d_in)
 
         Official Implementation:
             selective_scan_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L86
             Note: I refactored some parts out of `selective_scan_ref` out, so the functionality doesn't match exactly.
 
         """
-        (b, l, d_in) = u.shape
+        (l, d_in) = u.shape
         n = A.shape[1]
 
         # Discretize continuous parameters (A, B)
-        deltaA = np.exp(np.einsum("b l d, d n -> b l d n", delta, A))
-        deltaB_u = np.einsum("b l d, b l n, b l d -> b l d n", delta, B, u)
+        deltaA = jnp.exp(jnp.einsum("l d, d n -> l d n", delta, A))
+        deltaB_u = jnp.einsum("l d, l n, l d -> l d n", delta, B, u)
 
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
-        x = np.zeros((b, d_in, n))
+        x = jnp.zeros((d_in, n))
         ys = []
         for i in range(l):
-            x = deltaA[:, i] * x + deltaB_u[:, i]
-            y = np.einsum("b d n, b n -> b d", x, C[:, i, :])
+            x = deltaA[i] * x + deltaB_u[i]
+            y = jnp.einsum("d n, n -> d", x, C[i, :])
             ys.append(y)
-        y = np.stack(ys, axis=1)  # shape (b, l, d_in)
+        y = jnp.stack(ys, axis=0)  # shape (l, d_in)
 
         y = y + u * D
 
