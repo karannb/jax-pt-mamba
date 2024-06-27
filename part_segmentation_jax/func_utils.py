@@ -23,11 +23,11 @@ def knn(ref: Array, query: Array, k: int) -> Array:
 
     Args
     ----
-        ref: (B, N, 3)
+        ref: (N, 3)
         This is the set of non-fps sampled points, basically
         the whole point cloud.
 
-        query: (B, fps_num, 3)
+        query: (fps_num, 3)
         This is the set of fps samples points.
 
         k: int
@@ -37,14 +37,16 @@ def knn(ref: Array, query: Array, k: int) -> Array:
 
     Returns
     -------
-        idx: (B, fps_num, k)
+        idx: (fps_num, k)
         Returns the indices of k-closest neighbours of each
         query point from the ref points set.
     """
 
-    dist_matrix = jnp.linalg.norm(query[:, :, None, :] - ref[:, None, :, :], axis=-1)
+    dist_matrix = jnp.linalg.norm(query[:, None, :] - ref[None, :, :], axis=-1)
     inds = jnp.argsort(dist_matrix, axis=-1)
-    return inds[:, :, :k]
+    # NOTE :  check out https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.cKDTree.html
+    # if the above method is slow.
+    return inds[:, :k]
 
 
 def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> None:

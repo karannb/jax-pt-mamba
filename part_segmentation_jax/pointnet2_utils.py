@@ -4,8 +4,6 @@ import jax.numpy as jnp
 from jax._src import prng
 from jax._src.basearray import Array
 
-import os, threading
-import numpy as np
 import flax.linen as nn
 
 from typing import Union, Tuple

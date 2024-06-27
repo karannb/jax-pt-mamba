@@ -160,7 +160,7 @@ class Group(nn.Module):
 
         Args
         ----
-            pc: Array, shape=[B, N, 3]
+            pc: Array, shape=[N, 3]
             The input point cloud.
 
             key: KeyArray
@@ -168,32 +168,31 @@ class Group(nn.Module):
 
         Returns
         -------
-            neighborhood: Array, shape=[B, G, M, 3]
+            neighborhood: Array, shape=[G, M, 3]
             The grouped points, where G is num_group and M is group_size.
 
-            center: Array, shape=[B, G, 3]
+            center: Array, shape=[G, 3]
             The center of each group.
         """
 
-        B, N, _ = pc.shape
+        N, _ = pc.shape
 
-        center = fps(pc, self.num_group, key)  # (B, G, 3)
-        idx = self.knn(ref=pc, query=center)  # (B, G, M)
+        center = fps(pc, number=self.num_group, key=key)  # (G, 3)
+        idx = self.knn(ref=pc, query=center)  # (G, M)
 
         assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
-        assert idx.shape[1] == self.num_group, f"idx.shape[1] : {idx.shape[1]}"
-        assert idx.shape[2] == self.group_size, f"idx.shape[2] : {idx.shape[2]}"
-
-        # translate batch idx steps to directly get the nbrhoods
-        idx_base = jnp.arange(0, B).reshape(-1, 1, 1) * N  # (B, 1, 1)
-        idx = idx + idx_base
+        assert idx.shape[0] == self.num_group, f"idx.shape[1] : {idx.shape[0]}"
+        assert idx.shape[1] == self.group_size, f"idx.shape[2] : {idx.shape[1]}"
+        
+        # reshape idx for faster indexing
         idx = idx.reshape(-1)
 
         # Get the nbrhood
-        neighborhood = pc.reshape(B * N, -1)[idx, :]
-        neighborhood = neighborhood.reshape(B, self.num_group, self.group_size, 3)
+        neighborhood = pc.reshape(N, -1)[idx, :] # (G*M, 3)
+        neighborhood = neighborhood.reshape(self.num_group, self.group_size, 3) # (G, M, 3)
+        
         # normalize
-        neighborhood = neighborhood - expand_dims(center, dimensions=[2])
+        neighborhood = neighborhood - expand_dims(center, dimensions=[1])
         return neighborhood, center
 
 
