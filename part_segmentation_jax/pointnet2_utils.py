@@ -84,6 +84,8 @@ def farthest_point_sample(xyz: Array, npoint: int) -> Array:
     distance = jnp.ones((N, )) * 1e10
     
     # Randomly select the farthest point
+    # NOTE: this is a trick to maintain randomness
+    # across the batch dimension when being vmapped
     farthest = jnp.array(np.random.randint(low=0, high=N))
     
     def body_fn(i: int, val: Tuple[Array, Array, Array]):
