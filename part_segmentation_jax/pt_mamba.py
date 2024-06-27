@@ -183,14 +183,16 @@ class Group(nn.Module):
         assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
         assert idx.shape[0] == self.num_group, f"idx.shape[1] : {idx.shape[0]}"
         assert idx.shape[1] == self.group_size, f"idx.shape[2] : {idx.shape[1]}"
-        
+
         # reshape idx for faster indexing
         idx = idx.reshape(-1)
 
         # Get the nbrhood
-        neighborhood = pc.reshape(N, -1)[idx, :] # (G*M, 3)
-        neighborhood = neighborhood.reshape(self.num_group, self.group_size, 3) # (G, M, 3)
-        
+        neighborhood = pc.reshape(N, -1)[idx, :]  # (G*M, 3)
+        neighborhood = neighborhood.reshape(
+            self.num_group, self.group_size, 3
+        )  # (G, M, 3)
+
         # normalize
         neighborhood = neighborhood - expand_dims(center, dimensions=[1])
         return neighborhood, center
@@ -220,7 +222,7 @@ class Encoder(nn.Module):
         """
         Args
         ----
-            pc: Array, shape=[B, G, M, C]
+            pc: Array, shape=[G, M, C]
             The input point cloud.
 
             training: bool
@@ -228,30 +230,32 @@ class Encoder(nn.Module):
 
         Returns
         -------
-            global_feature: Array, shape=[B, G, C]
+            global_feature: Array, shape=[G, C]
             The feature vector for each group.
         """
 
-        B, G, M, C = pc.shape
-        pc = pc.reshape(B * G, M, C)
+        G, M, _ = pc.shape
 
         # First convolution
         feature = customSequential(pc, self.conv1, training=training)
-        # (B * G, M, 256)
+        # (G, M, 256)
 
         # Pick global feature and concatenate to feature
-        global_feature = jnp.max(feature, axis=1, keepdims=True)
+        global_feature = jnp.max(
+            feature, axis=1, keepdims=True
+        )  # max pooling across all points in a group
         feature = jnp.concatenate([global_feature.repeat(M, axis=1), pc], axis=-1)
+        # (G, M, 256) || (G, 1, 256) -> (G, M, 512)
 
         # Second convolution
         feature = customSequential(feature, self.conv2, training=training)
-        # (B * G, M, 512)
+        # (G, M, encoder_channels)
 
         # get the feature vector for the center
         global_feature = jnp.max(
             feature, axis=1, keepdims=False
         )  # Max pooling across all points in a group
-        return global_feature.reshape(B, G, -1)
+        return global_feature.reshape(G, -1)  # (G, encoder_channels)
 
 
 class MixerModelForSegmentation(nn.Module):
