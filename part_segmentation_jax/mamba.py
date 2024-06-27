@@ -75,11 +75,11 @@ class ResidualBlock(nn.Module):
     def __call__(self, x, training=False):
         """
         Args:
-            x: shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
+            x: shape (l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
 
 
         Returns:
-            output: shape (b, l, d)
+            output: shape (l, d)
 
         Official Implementation:
             Block.forward(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba_simple.py#L297

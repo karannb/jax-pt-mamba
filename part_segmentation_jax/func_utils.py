@@ -193,7 +193,7 @@ def drop_path(
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    shape = (1,) * (x.ndim)
     random_tensor = keep_prob + random.uniform(key, shape, dtype=x.dtype)
     random_tensor = jnp.floor(random_tensor)  # binarize
     output = jnp.divide(x, keep_prob) * random_tensor
@@ -208,12 +208,9 @@ class DropPathV2(nn.Module):
     """
 
     drop_prob: float = None
-    rng_collection: str = "droppath"
 
     @nn.compact
-    def __call__(
-        self, x: Array, training: bool = False, rng: Optional[KeyArray] = None
-    ) -> Array:
+    def __call__(self, x: Array, training: bool = False) -> Array:
         """
         NOTE: this function drops along the batch dimension.
 
@@ -234,13 +231,16 @@ class DropPathV2(nn.Module):
             output: Array
             The output tensor after applying drop path.
         """
-        
+
         if self.drop_prob == 0.0 or not training:
             return x
         
-        if rng is None:
-            dropPath_key = self.make_rng(self.rng_collection)
-        
+        # NOTE :  This is a hack because before vmap I don't have access to the
+        # batch dimension. So, I am just taking a key from numpy random and
+        # using it as the key for the drop path.
+        completely_random_key = np.random.randint(0, 100000, (1,))
+        dropPath_key = self.make_rng(completely_random_key[0])
+
         return drop_path(
             x=x, drop_prob=self.drop_prob, key=dropPath_key, training=training
         )

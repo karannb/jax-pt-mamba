@@ -24,8 +24,8 @@ from part_segmentation_jax.func_utils import (
 # Type definitions
 from jax._src import prng
 from jax._src.basearray import Array
-from jaxlib.xla_extension import ArrayImpl, DeviceArray
 from typing import Union, Tuple, Dict, Any, List
+from jaxlib.xla_extension import ArrayImpl, DeviceArray
 
 KeyArray = prng.PRNGKeyArray  # Union[Array, ]
 
@@ -540,7 +540,7 @@ if __name__ == "__main__":
     new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
     model, params = get_model(new_conf, num_classes=16)
 
-    fps_key, dropout_key, droppath_key = random.split(random.PRNGKey(0), 3)
+    fps_key, dropout_key = random.split(random.PRNGKey(0))
     x = jnp.ones((10, 3, 1024))
     cls = jax.nn.one_hot(jnp.ones(10, dtype=jnp.int32), 16)
     out = model.apply(
@@ -549,6 +549,6 @@ if __name__ == "__main__":
         cls_label=cls,
         fps_key=fps_key,
         training=True,
-        rngs={"dropout": dropout_key, "droppath": droppath_key},
+        rngs={"dropout": dropout_key},
     )
     print(out.shape)
