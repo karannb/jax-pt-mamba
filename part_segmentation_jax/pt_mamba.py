@@ -10,9 +10,9 @@ from flax import linen as nn
 
 # other imports
 from dataclasses import dataclass
-import part_segmentation_jax.pointnet2_utils as pn2_utils
-from part_segmentation_jax.mamba import ResidualBlock, ModelArgs
-from part_segmentation_jax.func_utils import (
+import pointnet2_utils as pn2_utils
+from mamba import ResidualBlock, ModelArgs
+from func_utils import (
     RMSNorm,
     knn,
     printParams,
@@ -299,7 +299,9 @@ class MixerModelForSegmentation(nn.Module):
             else nn.LayerNorm(epsilon=self.norm_eps)
         )
 
-    def __call__(self, x: Array, pos: Array, training: bool = False) -> List[Array]:
+    def __call__(
+        self, x: Array, pos: Array, drop_path_key: KeyArray, training: bool = False
+    ) -> List[Array]:
         """
         Returns the features from the layers specified in fetch_idx.
 
@@ -310,6 +312,10 @@ class MixerModelForSegmentation(nn.Module):
 
             pos: Array
             The positional encoding tensor.
+
+            drop_path_key: KeyArray
+            The random key for drop path.
+            Needs to be passed because randomness is required across vmap.
 
             training: bool
             Whether the model is in training mode or not.
@@ -325,9 +331,13 @@ class MixerModelForSegmentation(nn.Module):
         hidden_states = x + pos
 
         for i, layer in enumerate(self.layers):
-            # drop_key, used_key = random.split(drop_key) drop_key: KeyArray,
+            # Split the key for drop path in each layer
+            used_keys, drop_path_key = jnp.stack(
+                [random.split(drop_path_key[a], 2) for a in range(x.shape[0])]
+            )
             hidden_states = layer(
                 hidden_states,
+                used_keys,
                 training=training,
             )
             if (i + 1) in self.fetch_idx:
@@ -401,101 +411,112 @@ class PointMamba(nn.Module):
         ]
 
     def __call__(
-        self, pts: Array, cls_label: Array, fps_key: KeyArray, training: bool = False
+        self,
+        pts: Array,
+        cls_label: Array,
+        fps_key: KeyArray,
+        drop_path_key: KeyArray,
+        training: bool = False,
     ):
         """
         Run the model on the input point cloud.
 
         Args
         ----
-            pts: Array of shape [B, 3, N]
+            pts: Array of shape [3, N]
             The input point cloud.
 
-            cls_label: Array of shape [B, classes]
+            cls_label: Array of shape [classes]
             The object being segmented.
 
             fps_key: KeyArray
             The random key for sampling from the pts.
+
+            drop_path_key: KeyArray
+            The random key for drop path.
+            Needs to be passed because randomness is required across vmap.
 
             training: bool
             Whether the model is in training mode or not.
 
         Returns
         -------
-            x: Array of shape [B, N, classes]
+            x: Array of shape [N, classes]
             The output of the model.
         """
 
-        B, _, N = pts.shape
-        pts = customTranspose(pts)  # B N 3
+        _, N = pts.shape
+        pts = customTranspose(pts)  # (N, 3)
 
         # divide the point cloud in the same form. This is important
-        neighborhood, center = self.grouper(pts, fps_key)  # (B, G, M, 3), (B, G, 3)
+        neighborhood, center = self.grouper(pts, fps_key)  # (G, M, 3), (G, 3)
         group_input_tokens = self.encoder(
             neighborhood, training=training
-        )  # (B, G, encoder_channels)
+        )  # (G, encoder_channels)
 
         # Positional encoding
-        pos = self.pos_emb(center)  # (B, G, d_model)
+        pos = self.pos_emb(center)  # (G, d_model)
 
         # Reorder, first sort acc to x, then y then z and concatenate
-        center_x = center[:, :, 0].argsort(axis=-1)[:, :, None]  # (B, G, 1)
-        center_y = center[:, :, 1].argsort(axis=-1)[:, :, None]
-        center_z = center[:, :, 2].argsort(axis=-1)[:, :, None]
+        center_x = center[:, 0].argsort(axis=-1)[:, None]  # (G, 1)
+        center_y = center[:, 1].argsort(axis=-1)[:, None]
+        center_z = center[:, 2].argsort(axis=-1)[:, None]
 
         inds = [center_x, center_y, center_z]
 
         group_input_tokens = sortSelectAndConcat(
             group_input_tokens, inds
-        )  # (B, G*3, encoder_channels)
+        )  # (G*3, encoder_channels)
         pos = sortSelectAndConcat(pos, inds)
         center = sortSelectAndConcat(center, inds)
 
         # Run the Mamba model
-        features_list = self.blocks(x=group_input_tokens, pos=pos, training=training)
-        # (B, G*3, d_model) * len(fetch_idx)
+        features_list = self.blocks(
+            x=group_input_tokens,
+            pos=pos,
+            drop_path_key=drop_path_key,
+            training=training,
+        )
+        # (G*3, d_model) * len(fetch_idx)
 
         features_list = [
             customTranspose(self.post_norm(feature)) for feature in features_list
         ]
-        x = jnp.concatenate(features_list, axis=1)  # (B, d_model*len(fetch_idx), G*3)
+        x = jnp.concatenate(features_list, axis=1)  # (d_model*len(fetch_idx), G*3)
 
-        x_max = jnp.max(x, axis=2)  # (B, d_model*len(fetch_idx)), max_pooling
-        x_avg = jnp.mean(x, axis=2)  # mean_pooling
-        x_max_feature = expand_dims(x_max.reshape(B, -1), dimensions=[-1]).repeat(
-            repeats=N, axis=-1
-        )
-        x_avg_feature = expand_dims(x_avg.reshape(B, -1), dimensions=[-1]).repeat(
-            repeats=N, axis=-1
-        )
-        # (B, d_model*len(fetch_idx), N)
+        x_max = jnp.max(x, axis=1)  # (d_model*len(fetch_idx)), max_pooling
+        x_avg = jnp.mean(x, axis=1)  # mean_pooling
+        x_max_feature = expand_dims(x_max, dimensions=[-1]).repeat(repeats=N, axis=-1)
+        x_avg_feature = expand_dims(x_avg, dimensions=[-1]).repeat(repeats=N, axis=-1)
+        # (d_model*len(fetch_idx), N)
 
         # Need to tell the model about the class label so it can segment parts
-        cls_label_one_hot = cls_label.reshape(B, 1, 16)
+        cls_label_one_hot = cls_label.reshape(1, 16)
+        # the last reshape is needed because of how nn.Conv operates, expects - (..., features)
         cls_label_one_hot = customSequential(
             x=cls_label_one_hot,
             layers=self.label_conv,
             training=training,
             **{"negative_slope": self.config.leaky_relu_slope},
         )
-        cls_label_feature = customTranspose(cls_label_one_hot.repeat(repeats=N, axis=1))
-        # (B, 64, N)
+        cls_label_feature = customTranspose(cls_label_one_hot.repeat(repeats=N, axis=0))
+        # (64, N)
 
         x_global_feature = jnp.concatenate(
-            (x_max_feature, x_avg_feature, cls_label_feature), axis=1
+            (x_max_feature, x_avg_feature, cls_label_feature), axis=0
         )
-        # (B, d_model*len(fetch_idx)*2 + 64, N)
+        # (d_model*len(fetch_idx)*2 + 64, N)
 
-        # Propagate the features through a PointNet
+        # Propagate the RAW points through a PointNet
         f_level_0 = self.propagation_0(
             customTranspose(pts), customTranspose(center), customTranspose(pts), x
         )
-        # (B, G + 3, N)
+        # (G + 3, N)
 
         # Post-process using simple NN layers
         x = jnp.concatenate(
-            (f_level_0, x_global_feature), axis=1
-        )  # (B, d_model*len(fetch_idx)*2 + 64 + G + 3, N)
+            (f_level_0, x_global_feature), axis=0
+        )  # (d_model*len(fetch_idx)*2 + 64 + G + 3, N)
         x = customSequential(
             x=customTranspose(x),
             layers=self.post_layers,
@@ -514,15 +535,20 @@ def get_model(
     config: PointMambaArgs, num_classes: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
-    input_key, model_key, fps_key = random.split(random.PRNGKey(0), 3)
+    input_key, model_key, fps_key, drop_path_key = random.split(random.PRNGKey(0), 4)
     model = PointMamba(classes=num_classes, config=config)
-    dummy_x = random.normal(input_key, (10, 3, 1024))
+    dummy_x = random.normal(input_key, (3, 1024))
     dummy_cls = random.randint(
-        input_key, (10,), minval=0, maxval=num_classes, dtype=jnp.int32
+        input_key, (1,), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
     variables = model.init(
-        model_key, pts=dummy_x, fps_key=fps_key, cls_label=dummy_cls, training=False
+        model_key,
+        pts=dummy_x,
+        fps_key=fps_key,
+        cls_label=dummy_cls,
+        drop_path_key=drop_path_key,
+        training=False,
     )
 
     if verbose:
@@ -543,14 +569,15 @@ if __name__ == "__main__":
     new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
     model, params = get_model(new_conf, num_classes=16)
 
-    fps_key, dropout_key = random.split(random.PRNGKey(0))
-    x = jnp.ones((10, 3, 1024))
+    fps_key, dropout_key, drop_path_key = random.split(random.PRNGKey(0), 3)
+    x = jnp.ones((3, 1024))
     cls = jax.nn.one_hot(jnp.ones(10, dtype=jnp.int32), 16)
     out = model.apply(
         params,
         pts=x,
         cls_label=cls,
         fps_key=fps_key,
+        drop_path_key=drop_path_key,
         training=True,
         rngs={"dropout": dropout_key},
     )

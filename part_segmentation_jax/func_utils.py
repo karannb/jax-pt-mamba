@@ -137,17 +137,17 @@ def customSequential(
 
 
 def sortSelectAndConcat(
-    operand: Array, indices: List[List], aux_axis: int = -1, ind_axis: int = 1
+    operand: Array, indices: List[List], aux_axis: int = -1, ind_axis: int = 0
 ) -> Array:
     """
     This function is used during reordering of the features.
 
     Args
     ----
-        operand: Array, (B, G, C) usually
+        operand: Array, (G, C) usually
         The feature tensor that needs to be reordered.
 
-        indices: List[List], List of [(B, G, 1)] usually
+        indices: List[List], List of [(G, 1)] usually
         The indices with which the features need to be reordered.
 
         aux_axis: int
@@ -161,7 +161,7 @@ def sortSelectAndConcat(
 
     Returns
     -------
-        ovr_features: Array, (B, G*len(indices), C)
+        ovr_features: Array, (G*len(indices), C)
         The reordered (and concatenated) features tensor.
     """
 

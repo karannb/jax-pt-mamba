@@ -7,6 +7,7 @@ from jax._src.basearray import Array
 import flax.linen as nn
 
 from typing import Union, Tuple
+from func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
 
@@ -37,16 +38,16 @@ def square_distance(src: Array, dst: Array) -> Array:
     dist = (xn - xm)^2 + (yn - ym)^2 + (zn - zm)^2
          = sum(src**2,dim=-1)+sum(dst**2,dim=-1)-2*src^T*dst
     Input:
-        src: source points, [B, N, C]
-        dst: target points, [B, M, C]
+        src: source points, [N, C]
+        dst: target points, [M, C]
     Output:
-        dist: per-point square distance, [B, N, M]
+        dist: per-point square distance, [N, M]
     """
-    B, N, _ = src.shape
-    _, M, _ = dst.shape
-    dist = -2 * jnp.matmul(src, jnp.transpose(dst, (0, 2, 1)))
-    dist += jnp.sum(src**2, -1).reshape(B, N, 1)
-    dist += jnp.sum(dst**2, -1).reshape(B, 1, M)
+    N, _ = src.shape
+    M, _ = dst.shape
+    dist = -2 * jnp.matmul(src, customTranspose(dst))
+    dist += jnp.sum(src**2, -1).reshape(N, 1)
+    dist += jnp.sum(dst**2, -1).reshape(1, M)
     return dist
 
 
@@ -128,46 +129,64 @@ class PointNetFeaturePropagation(nn.Module):
     ) -> Array:
         """
         Input:
-            xyz1: input points position data, [B, C, N]
-            xyz2: sampled input points position data, [B, C, S]
-            points1: input points data, [B, D, N]
-            points2: input points data, [B, D, S]
+            xyz1: input points position data, [C, N]
+            xyz2: sampled input points position data, [C, S]
+                  (group centres for us)
+            points1: input points data, [D, N]
+                  (same as xyz1 for us)
+            points2: input points data, [D', S]
+                  (we have some embedding for this one)
         Return:
-            new_points: upsampled points data, [B, D', N]
+            new_points: upsampled points data, [D'', N]
         """
-        xyz1 = jnp.transpose(xyz1, (0, 2, 1))
-        xyz2 = jnp.transpose(xyz2, (0, 2, 1))
+        xyz1 = customTranspose(xyz1)  # [N, C]
+        xyz2 = customTranspose(xyz2)  # [S, C]
 
-        points2 = jnp.transpose(points2, (0, 2, 1))
-        B, N, C = xyz1.shape
-        _, S, _ = xyz2.shape
+        points2 = customTranspose(points2)  # [S, D']
+        N, C = xyz1.shape
+        S, _ = xyz2.shape
 
         if S == 1:
-            interpolated_points = points2.repeat(N, axis=1)
+            # if only one centre, then just return the points2
+            # with repeats
+            interpolated_points = points2.repeat(N, axis=0)  # [N, D]
         else:
-            dists = square_distance(xyz1, xyz2)
+            dists = square_distance(xyz1, xyz2)  # [N, S]
             new_dists, idx = dists.sort(axis=-1), dists.argsort(axis=-1)
-            dists, idx = new_dists[:, :, :3], idx[:, :, :3]  # [B, N, 3]
+            dists, idx = (
+                new_dists[:, :3],
+                idx[:, :3],
+            )  # [N, 3], pick top 3 closest centres per point, this will
+            # probably be the same point because S = 3*G for us, so each 
+            # point is repeated 3 times in xyz2
 
-            dist_recip = 1.0 / (dists + 1e-8)
-            norm = jnp.sum(dist_recip, axis=2, keepdims=True)
+            dist_recip = 1.0 / (dists + 1e-8)  # [N, 3]
+            norm = jnp.sum(dist_recip, axis=1, keepdims=True)  # [N, 1]
             weight = dist_recip / norm
+            # now we have the weights for the 3 closest points
+            # Multiply the weights with the points to get the interpolated points
             interpolated_points = jnp.sum(
-                index_points(points2, idx) * weight.reshape(B, N, 3, 1), axis=2
-            )
+                index_points(points2, idx) * weight.reshape(N, 3, 1), axis=1
+            )  # Average pooling across 3 closest centres; [N, D'] after summing
+            # index_points(points2, idx) will return [N, 3, D'(=d_model * len(fetch_idx) for us)]
 
         if points1 is not None:
-            points1 = jnp.transpose(points1, (0, 2, 1))
-            new_points = jnp.concatenate([points1, interpolated_points], axis=-1)
+            points1 = customTranspose(points1) # [N, D]
+            new_points = jnp.concatenate(
+                [points1, interpolated_points], axis=-1
+            )  # [N, D'+D]
         else:
-            new_points = interpolated_points
+            new_points = interpolated_points # [N, D']
 
-        new_points = jnp.transpose(new_points, (0, 2, 1))
+        # new_points = customTranspose(new_points) # [N, *]
         for out_channel in self.mlp:
             new_points = nn.relu(
                 nn.BatchNorm(axis=-1, use_running_average=not training)(
                     nn.Conv(out_channel, (1,))(new_points)
                 )
             )
+        # [N, *]
+        
+        new_points = customTranspose(new_points) # [*, N]
 
         return new_points

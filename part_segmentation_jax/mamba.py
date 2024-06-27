@@ -31,7 +31,7 @@ from jax.nn.initializers import normal
 
 from flax import linen as nn
 
-from part_segmentation_jax.func_utils import (
+from func_utils import (
     Identity,
     RMSNorm,
     DropPathV2,
