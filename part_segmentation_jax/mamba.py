@@ -32,7 +32,7 @@ from jax.nn.initializers import normal
 import flax
 from flax import linen as nn
 
-from func_utils import *
+from part_segmentation_jax.func_utils import *
 
 
 @dataclass

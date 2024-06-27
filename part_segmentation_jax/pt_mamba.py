@@ -10,9 +10,9 @@ from flax import linen as nn
 
 # other imports
 from dataclasses import dataclass
-import pointnet2_utils as pn2_utils
-from mamba import ResidualBlock, ModelArgs
-from func_utils import (
+import part_segmentation_jax.pointnet2_utils as pn2_utils
+from part_segmentation_jax.mamba import ResidualBlock, ModelArgs
+from part_segmentation_jax.func_utils import (
     RMSNorm,
     knn,
     printParams,
@@ -490,7 +490,9 @@ class PointMamba(nn.Module):
         # (B, G + 3, N)
 
         # Post-process using simple NN layers
-        x = jnp.concatenate((f_level_0, x_global_feature), axis=1) # (B, d_model*len(fetch_idx)*2 + 64 + G + 3, N)
+        x = jnp.concatenate(
+            (f_level_0, x_global_feature), axis=1
+        )  # (B, d_model*len(fetch_idx)*2 + 64 + G + 3, N)
         x = customSequential(
             x=customTranspose(x),
             layers=self.post_layers,
