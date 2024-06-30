@@ -13,7 +13,9 @@ from jax.tree_util import Partial
 from flax import linen as nn
 
 # other imports
+from time import time
 from dataclasses import dataclass
+from utils.dropout import Dropout
 import models.pointnet2_utils as pn2_utils
 from models.mamba import ResidualBlock, MambaArgs
 from utils.func_utils import (
@@ -380,7 +382,7 @@ class PointMamba(nn.Module):
             ),  # figure out why 3392 is the number of input channels?
             nn.BatchNorm(),
             nn.relu,
-            nn.Dropout(0.5),
+            Dropout(0.5),
             nn.Conv(features=256, kernel_size=(1,)),
             nn.BatchNorm(),
             nn.relu,
@@ -439,7 +441,6 @@ class PointMamba(nn.Module):
 
         # Positional encoding
         pos = customSequential(center, self.pos_emb) # (G, d_model)
-        print("here")
 
         # Reorder, first sort acc to x, then y then z and concatenate
         center_x = center[:, 0].argsort(axis=-1)[:, None]  # (G, 1)
@@ -572,7 +573,16 @@ if __name__ == "__main__":
     ## Create a vmapped apply function
     # dropped_apply = jax.tree_util.Partial(model.apply, rngs={"dropout": dropout_key})
     vmapped_apply = jax.vmap(model.apply, in_axes=(None, 0, 0, 0, 0, None, None))
+    vmap_time = time()
     out = vmapped_apply(
         params, x, cls, fps_keys, droppath_keys, dropout_key, True
     )  # {}
+    print(f"vmapped apply took {time() - vmap_time:.3f}s")
+    
+    jitted_vmapped_apply = jax.jit(vmapped_apply)
+    jit_time = time()
+    out = jitted_vmapped_apply(
+        params, x, cls, fps_keys, droppath_keys, dropout_key, True
+    )
+    print(f"jitted apply took {time() - jit_time:.3f}s")
     print(out.shape)

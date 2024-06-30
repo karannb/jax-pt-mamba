@@ -12,6 +12,7 @@ from flax import linen as nn
 from flax.core import FrozenDict
 
 # from scipy.spatial import cKDTree
+from utils.dropout import Dropout
 from typing import List, Union, Dict, Any
 
 # type definitions
@@ -129,7 +130,7 @@ def customSequential(
         if isinstance(layer, nn.BatchNorm):
             x = layer(x, use_running_average=training)
 
-        elif isinstance(layer, nn.Dropout):
+        elif isinstance(layer, Dropout):
             used_key, kwargs["dropout_key"] = random.split(
                 kwargs["dropout_key"]
             )  # in case there are multiple dropout layers
