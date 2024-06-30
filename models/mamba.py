@@ -31,7 +31,7 @@ from jax.nn.initializers import normal
 
 from flax import linen as nn
 
-from func_utils import (
+from utils.func_utils import (
     Identity,
     RMSNorm,
     DropPathV2,
@@ -41,7 +41,7 @@ from func_utils import (
 
 
 @dataclass
-class ModelArgs:  # The same as torch version since this does not have any torch specific code
+class MambaArgs:  # The same as torch version since this does not have any torch specific code
     d_model: int
     norm_eps: float = 1e-5
     rms_norm: bool = False
@@ -60,7 +60,7 @@ class ModelArgs:  # The same as torch version since this does not have any torch
 
 
 class ResidualBlock(nn.Module):
-    args: ModelArgs
+    args: MambaArgs
     drop_path: float = 0.1
 
     def setup(self):
@@ -105,7 +105,7 @@ class ResidualBlock(nn.Module):
 
 
 class MambaBlock(nn.Module):
-    args: ModelArgs
+    args: MambaArgs
 
     def setup(self):
         self.in_proj = nn.Dense(

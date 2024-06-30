@@ -10,6 +10,7 @@ import flax
 import numpy as np
 from flax import linen as nn
 from flax.core import FrozenDict
+
 # from scipy.spatial import cKDTree
 from typing import List, Union, Dict, Any
 
@@ -46,11 +47,11 @@ def knn(ref: Array, query: Array, k: int) -> Array:
     dist_matrix = jnp.linalg.norm(query[:, None, :] - ref[None, :, :], axis=-1)
     inds = jnp.argsort(dist_matrix, axis=-1)
     return inds[:, :k]
-    
+
     # NOTE : check out https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.cKDTree.html
     # if the above method is slow.
     # CHECKED And used! about 100x faster than the above method. But doesn't work with vmap :/
-    
+
     # tree = cKDTree(ref)
     # _, idx = tree.query(query, k=k)
     # return idx
@@ -129,7 +130,10 @@ def customSequential(
             x = layer(x, use_running_average=training)
 
         elif isinstance(layer, nn.Dropout):
-            x = layer(x, deterministic=not training)
+            used_key, kwargs["dropout_key"] = random.split(
+                kwargs["dropout_key"]
+            )  # in case there are multiple dropout layers
+            x = layer(x, deterministic=not training, rng=used_key)
 
         elif layer == nn.leaky_relu:
             assert (
@@ -243,7 +247,7 @@ class DropPathV2(nn.Module):
 
         if self.drop_prob == 0.0 or not training:
             return x
-        
+
         # NOTE :  This is a hack because before vmap I don't have access to the
         # batch dimension. So, I am just taking a key from numpy random and
         # using it as the key for the drop path.
@@ -251,13 +255,11 @@ class DropPathV2(nn.Module):
         # dropPath_key = self.make_rng(completely_random_key[0])
         # DOESN'T WORK!
         # Solution: make a batched key object at the start and keep passing it.
-        
+
         if self.drop_prob > 0.0 and drop_key is None:
             raise ValueError("DropPathV2 requires a PRNGKey to be passed.")
-        
-        return drop_path(
-            x=x, drop_prob=self.drop_prob, key=drop_key, training=training
-        )
+
+        return drop_path(x=x, drop_prob=self.drop_prob, key=drop_key, training=training)
 
 
 class Identity(nn.Module):

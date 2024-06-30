@@ -1,3 +1,7 @@
+import sys
+
+sys.path.append(".")
+
 # jax imports
 import jax
 from jax import random
@@ -10,9 +14,9 @@ from flax import linen as nn
 
 # other imports
 from dataclasses import dataclass
-import pointnet2_utils as pn2_utils
-from mamba import ResidualBlock, ModelArgs
-from func_utils import (
+import models.pointnet2_utils as pn2_utils
+from models.mamba import ResidualBlock, MambaArgs
+from utils.func_utils import (
     RMSNorm,
     knn,
     printParams,
@@ -25,7 +29,6 @@ from func_utils import (
 from jax._src import prng
 from jax._src.basearray import Array
 from typing import Union, Tuple, Dict, Any, List
-from jaxlib.xla_extension import ArrayImpl, DeviceArray
 
 KeyArray = prng.PRNGKeyArray  # Union[Array, ]
 
@@ -34,7 +37,7 @@ KeyArray = prng.PRNGKeyArray  # Union[Array, ]
 class PointMambaArgs:
 
     mamba_depth: int
-    mamba_args: ModelArgs
+    mamba_args: MambaArgs
     drop_out: float = 0.0
     drop_path: float = 0.1
     num_group: int = 128
@@ -99,7 +102,7 @@ def create_block(
         The instantiated residual block for the Mamba model.
     """
 
-    model_args = ModelArgs(
+    model_args = MambaArgs(
         d_model=d_model,
         rms_norm=rms_norm,
         norm_eps=norm_eps,
@@ -114,33 +117,6 @@ def create_block(
     block = ResidualBlock(args=model_args, drop_path=drop_path)
 
     return block
-
-
-def fps(data: Array, number: int, key: KeyArray) -> Array:
-    """
-    Farthest point sampling algorithm.
-
-    Args
-    ----
-        data: Array, shape=[N, C] usually
-        The input data.
-
-        number: int
-        The number of points to sample.
-
-        key: KeyArray
-        The random key for sampling.
-
-    Returns
-    -------
-        fps_data: Array, shape=[number, C]
-        The farthest point sampled data.
-    """
-
-    fps_idx = pn2_utils.farthest_point_sample(data, number, key)
-    fps_data = pn2_utils.index_points(data, fps_idx)
-
-    return fps_data
 
 
 class Group(nn.Module):
@@ -177,7 +153,7 @@ class Group(nn.Module):
 
         N, _ = pc.shape
 
-        center = fps(pc, number=self.num_group, key=key)  # (G, 3)
+        center = pn2_utils.fps(pc, number=self.num_group, key=key)  # (G, 3)
         idx = self.knn(ref=pc, query=center)  # (G, M)
 
         # assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
@@ -301,7 +277,7 @@ class MixerModelForSegmentation(nn.Module):
         )
 
     def __call__(
-        self, x: Array, pos: Array, drop_path_key: KeyArray, training: bool = False
+        self, x: Array, pos: Array, droppath_key: KeyArray, training: bool = False
     ) -> List[Array]:
         """
         Returns the features from the layers specified in fetch_idx.
@@ -314,7 +290,7 @@ class MixerModelForSegmentation(nn.Module):
             pos: Array
             The positional encoding tensor.
 
-            drop_path_key: KeyArray
+            droppath_key: KeyArray
             The random key for drop path.
             Needs to be passed because randomness is required across vmap.
 
@@ -333,7 +309,7 @@ class MixerModelForSegmentation(nn.Module):
 
         for i, layer in enumerate(self.layers):
             # Split the key for drop path in each layer
-            used_keys, drop_path_key = random.split(drop_path_key)
+            used_keys, droppath_key = random.split(droppath_key)
             hidden_states = layer(
                 hidden_states,
                 used_keys,
@@ -367,9 +343,11 @@ class PointMamba(nn.Module):
         self.encoder = Encoder(encoder_channels=self.config.encoder_channels)
 
         # Positional Embedding
-        self.pos_emb = nn.Sequential(
-            [nn.Dense(128), nn.gelu, nn.Dense(self.config.mamba_args.d_model)]
-        )
+        self.pos_emb = [
+            nn.Dense(128),
+            nn.gelu,
+            nn.Dense(self.config.mamba_args.d_model),
+        ]
 
         # Mamba model
         self.blocks = MixerModelForSegmentation(
@@ -414,7 +392,8 @@ class PointMamba(nn.Module):
         pts: Array,
         cls_label: Array,
         fps_key: KeyArray,
-        drop_path_key: KeyArray,
+        droppath_key: KeyArray,
+        dropout_key: KeyArray,
         training: bool = False,
     ):
         """
@@ -431,9 +410,14 @@ class PointMamba(nn.Module):
             fps_key: KeyArray
             The random key for sampling from the pts.
 
-            drop_path_key: KeyArray
+            droppath_key: KeyArray
             The random key for drop path.
             Needs to be passed because randomness is required across vmap.
+
+            dropout_key: KeyArray
+            The random key for dropout.
+            Needs to be passed even though randomness IS NOT required across vmap,
+            tried a bunch of other things, this is the easiest and most interpretable.
 
             training: bool
             Whether the model is in training mode or not.
@@ -454,7 +438,8 @@ class PointMamba(nn.Module):
         )  # (G, encoder_channels)
 
         # Positional encoding
-        pos = self.pos_emb(center)  # (G, d_model)
+        pos = customSequential(center, self.pos_emb) # (G, d_model)
+        print("here")
 
         # Reorder, first sort acc to x, then y then z and concatenate
         center_x = center[:, 0].argsort(axis=-1)[:, None]  # (G, 1)
@@ -473,7 +458,7 @@ class PointMamba(nn.Module):
         features_list = self.blocks(
             x=group_input_tokens,
             pos=pos,
-            drop_path_key=drop_path_key,
+            droppath_key=droppath_key,
             training=training,
         )
         # (G*3, d_model) * len(fetch_idx)
@@ -490,7 +475,7 @@ class PointMamba(nn.Module):
         # (d_model*len(fetch_idx), N)
 
         # Need to tell the model about the class label so it can segment parts
-        cls_label_one_hot = cls_label.reshape(1, 16)
+        cls_label_one_hot = cls_label.reshape(1, self.classes)
         # the last reshape is needed because of how nn.Conv operates, expects - (..., features)
         cls_label_one_hot = customSequential(
             x=cls_label_one_hot,
@@ -520,7 +505,10 @@ class PointMamba(nn.Module):
             x=customTranspose(x),
             layers=self.post_layers,
             training=training,
-            **{"negative_slope": self.config.leaky_relu_slope},
+            **{
+                "negative_slope": self.config.leaky_relu_slope,
+                "dropout_key": dropout_key,
+            },
         )
 
         # Final pred
@@ -533,7 +521,9 @@ def get_model(
     config: PointMambaArgs, num_classes: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
-    input_key, model_key, fps_key, drop_path_key = random.split(random.PRNGKey(0), 4)
+    input_key, model_key, fps_key, droppath_key, dropout_key = random.split(
+        random.PRNGKey(0), 5
+    )
     model = PointMamba(classes=num_classes, config=config)
     dummy_x = random.normal(input_key, (3, 1024))
     dummy_cls = random.randint(
@@ -545,7 +535,8 @@ def get_model(
         pts=dummy_x,
         fps_key=fps_key,
         cls_label=dummy_cls,
-        drop_path_key=drop_path_key,
+        droppath_key=droppath_key,
+        dropout_key=dropout_key,
         training=False,
     )
 
@@ -563,23 +554,25 @@ def get_model(
 
 if __name__ == "__main__":
 
-    mamba_conf = ModelArgs(d_model=384)
+    mamba_conf = MambaArgs(d_model=384)
     new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
     model, params = get_model(new_conf, num_classes=16)
-    
+
     # Check for vmap
-    
+
     ## Prep. i/p
     x = jnp.ones((100, 3, 1024))
     cls = jax.nn.one_hot(jnp.ones(100, dtype=jnp.int32), 16)
-    
+
     ## Prep. keys
-    fps_key, drop_path_key, dropout_key = random.split(random.PRNGKey(0), 3)
-    drop_path_keys = random.split(drop_path_key, x.shape[0])
+    fps_key, droppath_key, dropout_key = random.split(random.PRNGKey(0), 3)
+    droppath_keys = random.split(droppath_key, x.shape[0])
     fps_keys = random.split(fps_key, x.shape[0])
-    
+
     ## Create a vmapped apply function
-    dropped_apply = jax.tree_util.Partial(model.apply, rngs={"dropout": dropout_key})
-    vmapped_apply = jax.vmap(dropped_apply, in_axes=(None, 0, 0, 0, 0, None))
-    out = vmapped_apply(params, x, cls, fps_keys, drop_path_keys, True) # {"dropout": dropout_key}
+    # dropped_apply = jax.tree_util.Partial(model.apply, rngs={"dropout": dropout_key})
+    vmapped_apply = jax.vmap(model.apply, in_axes=(None, 0, 0, 0, 0, None, None))
+    out = vmapped_apply(
+        params, x, cls, fps_keys, droppath_keys, dropout_key, True
+    )  # {}
     print(out.shape)

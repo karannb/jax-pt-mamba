@@ -1,82 +1,210 @@
-from tools import pretrain_run_net as pretrain
-from tools import finetune_run_net as finetune
-from tools import test_run_net as test_net
-from utils import parser, dist_utils, misc
-from utils.logger import *
-from utils.config import *
-import time
-import os
-import torch
-from tensorboardX import SummaryWriter
+import sys
+
+sys.path.append(".")
+
+import jax
+from jax import random
+import jax.numpy as jnp
+from jax import grad, jit, vmap
+from jax._src.prng import PRNGKeyArray
+
+import optax
+import datetime
+import numpy as np
+from pathlib import Path
+from argparse import ArgumentParser
+from flax import linen as nn
+from flax.training.train_state import TrainState
+
+from models.mamba import MambaArgs
+from dataset import PartNormalDataset, JAXDataLoader
+from models.pt_mamba import PointMambaArgs, get_model
+from utils.func_utils import customTranspose
+from utils.provider import batched_random_scale_point_cloud, batched_shift_point_cloud
+
+
+def parse_args():
+
+    parser = ArgumentParser()
+
+    parser.add_argument("--d_model", type=int, default=32)
+    parser.add_argument("--norm_eps", type=float, default=1e-5)
+    parser.add_argument("--rms_norm", type=bool, default=False)
+    parser.add_argument("--d_state", type=int, default=16)
+    parser.add_argument("--expand", type=int, default=2)
+    parser.add_argument("--dt_rank", default="auto")
+    parser.add_argument("--d_conv", type=int, default=4)
+    parser.add_argument("--conv_bias", type=bool, default=True)
+    parser.add_argument("--bias", type=bool, default=False)
+    parser.add_argument("--mamba_depth", type=int, default=3)
+    parser.add_argument("--drop_out", type=float, default=0.0)
+    parser.add_argument("--drop_path", type=float, default=0.2)
+    parser.add_argument("--num_group", type=int, default=128)
+    parser.add_argument("--group_size", type=int, default=32)
+    parser.add_argument("--encoder_channels", type=int, default=32)
+    parser.add_argument("--fetch_idx", type=tuple, default=(1, 3, 7))
+    parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
+
+    args = parser.parse_args()
+    mamba_args = MambaArgs(
+        **{arg: getattr(args, arg) for arg in MambaArgs.__dataclass_fields__.keys()}
+    )
+    point_mamba_args = PointMambaArgs(
+        mamba_args=mamba_args,
+        mamba_depth=args.mamba_depth,
+        drop_out=args.drop_out,
+        drop_path=args.drop_path,
+        num_group=args.num_group,
+        group_size=args.group_size,
+        encoder_channels=args.encoder_channels,
+        fetch_idx=args.fetch_idx,
+        leaky_relu_slope=args.leaky_relu_slope,
+    )
+
+    return point_mamba_args
+
+
+class TrainState(TrainState):
+    key: PRNGKeyArray
+
 
 def main():
-    # args
-    args = parser.get_args()
-    # CUDA
-    args.use_gpu = torch.cuda.is_available()
-    if args.use_gpu:
-        torch.backends.cudnn.benchmark = True
-    # init distributed env first, since logger depends on the dist info.
-    if args.launcher == 'none':
-        args.distributed = False
-    else:
-        args.distributed = True
-        dist_utils.init_dist(args.launcher)
-        # re-set gpu_ids with distributed training mode
-        _, world_size = dist_utils.get_dist_info()
-        args.world_size = world_size
-    # logger
-    timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-    log_file = os.path.join(args.experiment_path, f'{timestamp}.log')
-    logger = get_root_logger(log_file=log_file, name=args.log_name)
-    # define the tensorboard writer
-    if not args.test:
-        if args.local_rank == 0:
-            train_writer = SummaryWriter(os.path.join(args.tfboard_path, 'train'))
-            val_writer = SummaryWriter(os.path.join(args.tfboard_path, 'test'))
-        else:
-            train_writer = None
-            val_writer = None
-    # config
-    config = get_config(args, logger = logger)
-    # batch size
-    if args.distributed:
-        assert config.total_bs % world_size == 0
-        config.dataset.train.others.bs = config.total_bs // world_size
-        if config.dataset.get('extra_train'):
-            config.dataset.extra_train.others.bs = config.total_bs // world_size * 2
-        config.dataset.val.others.bs = config.total_bs // world_size * 2
-        if config.dataset.get('test'):
-            config.dataset.test.others.bs = config.total_bs // world_size 
-    else:
-        config.dataset.train.others.bs = config.total_bs
-        if config.dataset.get('extra_train'):
-            config.dataset.extra_train.others.bs = config.total_bs * 2
-        config.dataset.val.others.bs = config.total_bs * 2
-        if config.dataset.get('test'):
-            config.dataset.test.others.bs = config.total_bs 
-    # log 
-    log_args_to_file(args, 'args', logger = logger)
-    log_config_to_file(config, 'config', logger = logger)
-    # exit()
-    logger.info(f'Distributed training: {args.distributed}')
-    # set random seeds
-    if args.seed is not None:
-        logger.info(f'Set random seed to {args.seed}, '
-                    f'deterministic: {args.deterministic}')
-        misc.set_random_seed(args.seed, deterministic=args.deterministic) # seed + rank, for augmentation
-    if args.distributed:
-        assert args.local_rank == torch.distributed.get_rank()
-        
-    # run
-    if args.test:
-        test_net(args, config)
-    else:
-        if args.finetune_model or args.scratch_model:
-            finetune(args, config, train_writer, val_writer)
-        else:
-            pretrain(args, config, train_writer, val_writer)
+
+    # Parse arguments
+    point_mamba_args = parse_args()
+    print(point_mamba_args)
+
+    # Other params
+    num_epochs = 300
+    num_cls = 50
+    batch_size = 3
+    num_workers = 1
+    num_points = 2048
+    learning_rate = 0.0002
+    weight_decay = 0.05
+
+    # Logging
+    timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
+    # Create overall LOG directory
+    exp_dir = Path("./log/")
+    exp_dir.mkdir(exist_ok=True)
+    
+    # Create experiment directory
+    exp_dir = exp_dir.joinpath("part_seg")
+    exp_dir.mkdir(exist_ok=True)
+    
+    # Create experiment sub-directory
+    exp_dir = exp_dir.joinpath(timestr)
+    exp_dir.mkdir(exist_ok=True)
+    
+    # Create sub-directories for checkpoints and logs
+    checkpoints_dir = exp_dir.joinpath("checkpoints/")
+    checkpoints_dir.mkdir(exist_ok=True)
+    log_dir = exp_dir.joinpath("logs/")
+    log_dir.mkdir(exist_ok=True)
+
+    # Get Dataset and DataLoaders
+    trainval_dataset = PartNormalDataset(
+        npoints=num_points, split="trainval", normal_channel=False
+    )
+    train_dataloader = JAXDataLoader(
+        trainval_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        drop_last=True,
+    )
+    test_dataset = PartNormalDataset(
+        npoints=num_points, split="test", normal_channel=False
+    )
+    test_dataloader = JAXDataLoader(
+        test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
+    )
+
+    # Create model
+    model, params = get_model(point_mamba_args, num_cls)
+    vmapped_apply = jax.vmap(model.apply, in_axes=(None, 0, 0, 0, 0, None))
+
+    # Create the cosine learning rate schedule
+    lr_schedule = optax.cosine_decay_schedule(
+        init_value=learning_rate,
+        decay_steps=num_epochs * len(train_dataloader),
+    )
+
+    # Create the AdamW optimizer with the cosine schedule
+    optimizer = optax.adamw(
+        learning_rate=lr_schedule,
+        weight_decay=weight_decay,  # Adjust the weight decay as needed
+    )
+
+    # Create state
+    train_state = TrainState.create(
+        apply_fn=vmapped_apply,
+        params=params,
+        key=random.PRNGKey(0),
+        tx=optimizer,
+    )
+
+    # create loss function
+    def loss_fn(outputs, targets):
+
+        return optax.softmax_cross_entropy(outputs, targets).mean()
+
+    # Storage for best metrics
+    best_acc = 0.0
+    best_class_avg_iou = 0.0
+    best_instance_avg_iou = 0.0
+
+    # initialize Keys required
+    all_keys = random.split(random.PRNGKey(0), 5)
+    fps_key, droppath_key, dropout_key, scale_key, shift_key = all_keys
+
+    for epoch in range(num_epochs):
+
+        loss_batch = []
+        num_iter = 0
+
+        for pts, cls_label, targets in train_dataloader:
+
+            num_iter += 1
+            # Randomly scale the point cloud
+            scale_key, used_key = random.split(scale_key)
+            points = batched_random_scale_point_cloud(pts, used_key)
+
+            # Randomly shift the point cloud
+            shift_key, used_key = random.split(shift_key)
+            points = batched_shift_point_cloud(points, used_key)
+
+            # for input to the model
+            points = customTranspose(points)
+            cls_label = nn.one_hot(cls_label, num_cls)
+            
+            # Forward pass
+            fps_keys = random.split(fps_key, batch_size + 1)
+            fps_key, used_fps_key = fps_keys[0], fps_keys[1:]
+
+            droppath_keys = random.split(droppath_key, batch_size + 1)
+            droppath_key, used_droppath_key = droppath_keys[0], droppath_keys[1:]
+
+            dropout_key, used_dropout_key = random.split(dropout_key)
+
+            logits = train_state.apply_fn(
+                params,
+                points,
+                cls_label,
+                used_fps_key,
+                used_droppath_key,
+                True,
+                rngs={"dropout": used_dropout_key},
+            )
+            
+            # Compute loss
+            loss = loss_fn(logits, targets)
+            loss_batch.append(loss)
+            
+            # Compute gradients
+            
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

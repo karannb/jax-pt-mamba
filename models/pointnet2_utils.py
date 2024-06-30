@@ -1,5 +1,4 @@
 import jax
-from jax import random
 import jax.numpy as jnp
 from jax._src import prng
 from jax._src.basearray import Array
@@ -7,7 +6,7 @@ from jax._src.basearray import Array
 import flax.linen as nn
 
 from typing import Union, Tuple
-from func_utils import customTranspose
+from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
 
@@ -115,6 +114,33 @@ def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
     return centroids
 
 
+def fps(data: Array, number: int, key: KeyArray) -> Array:
+    """
+    Farthest point sampling algorithm.
+
+    Args
+    ----
+        data: Array, shape=[N, C] usually
+        The input data.
+
+        number: int
+        The number of points to sample.
+
+        key: KeyArray
+        The random key for sampling.
+
+    Returns
+    -------
+        fps_data: Array, shape=[number, C]
+        The farthest point sampled data.
+    """
+
+    fps_idx = farthest_point_sample(data, number, key)
+    fps_data = index_points(data, fps_idx)
+
+    return fps_data
+
+
 class PointNetFeaturePropagation(nn.Module):
 
     mlp: list
@@ -158,7 +184,7 @@ class PointNetFeaturePropagation(nn.Module):
                 new_dists[:, :3],
                 idx[:, :3],
             )  # [N, 3], pick top 3 closest centres per point, this will
-            # probably be the same point because S = 3*G for us, so each 
+            # probably be the same point because S = 3*G for us, so each
             # point is repeated 3 times in xyz2
 
             dist_recip = 1.0 / (dists + 1e-8)  # [N, 3]
@@ -172,12 +198,12 @@ class PointNetFeaturePropagation(nn.Module):
             # index_points(points2, idx) will return [N, 3, D'(=d_model * len(fetch_idx) for us)]
 
         if points1 is not None:
-            points1 = customTranspose(points1) # [N, D]
+            points1 = customTranspose(points1)  # [N, D]
             new_points = jnp.concatenate(
                 [points1, interpolated_points], axis=-1
             )  # [N, D'+D]
         else:
-            new_points = interpolated_points # [N, D']
+            new_points = interpolated_points  # [N, D']
 
         # new_points = customTranspose(new_points) # [N, *]
         for out_channel in self.mlp:
@@ -187,7 +213,7 @@ class PointNetFeaturePropagation(nn.Module):
                 )
             )
         # [N, *]
-        
-        new_points = customTranspose(new_points) # [*, N]
+
+        new_points = customTranspose(new_points)  # [*, N]
 
         return new_points
