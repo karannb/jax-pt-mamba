@@ -7,13 +7,13 @@ import jax
 from jax import random
 import jax.numpy as jnp
 from jax.lax import expand_dims
-from jax.tree_util import Partial
 
 # flax imports
 from flax import linen as nn
 
 # other imports
 from time import time
+from functools import partial
 from dataclasses import dataclass
 from utils.dropout import Dropout
 import models.pointnet2_utils as pn2_utils
@@ -128,9 +128,9 @@ class Group(nn.Module):
 
     def setup(self):
 
-        self.knn = Partial(
-            knn, k=self.group_size
-        )  # instantiates the knn function with a fixed k
+        self.knn = partial(
+            knn,
+            k=self.group_size)  # instantiates the knn function with a fixed k
 
     def __call__(self, pc: Array, key: KeyArray) -> Tuple[Array, Array]:
         """
@@ -158,19 +158,17 @@ class Group(nn.Module):
         center = pn2_utils.fps(pc, number=self.num_group, key=key)  # (G, 3)
         idx = self.knn(ref=pc, query=center)  # (G, M)
 
-        # assert type(idx) in [Array, ArrayImpl, DeviceArray], f"idx type : {type(idx)}"
-        # this assert was not helpful at all!
-        assert idx.shape[0] == self.num_group, f"idx.shape[1] : {idx.shape[0]}"
-        assert idx.shape[1] == self.group_size, f"idx.shape[2] : {idx.shape[1]}"
+        assert idx.shape[0] == self.num_group, f"idx.shape[0] : {idx.shape[0]}"
+        assert idx.shape[
+            1] == self.group_size, f"idx.shape[1] : {idx.shape[1]}"
 
         # reshape idx for faster indexing
         idx = idx.reshape(-1)
 
         # Get the nbrhood
         neighborhood = pc.reshape(N, -1)[idx, :]  # (G*M, 3)
-        neighborhood = neighborhood.reshape(
-            self.num_group, self.group_size, 3
-        )  # (G, M, 3)
+        neighborhood = neighborhood.reshape(self.num_group, self.group_size,
+                                            3)  # (G, M, 3)
 
         # normalize
         neighborhood = neighborhood - expand_dims(center, dimensions=[1])
@@ -184,17 +182,19 @@ class Encoder(nn.Module):
     def setup(self):
 
         self.conv1 = [
-            nn.Conv(features=128, kernel_size=(1,), strides=(1,)),
+            nn.Conv(features=128, kernel_size=(1, ), strides=(1, )),
             nn.BatchNorm(axis=-1),
             nn.relu,
-            nn.Conv(features=256, kernel_size=(1,), strides=(1,)),
+            nn.Conv(features=256, kernel_size=(1, ), strides=(1, )),
         ]
 
         self.conv2 = [
-            nn.Conv(features=512, kernel_size=(1,), strides=(1,)),
+            nn.Conv(features=512, kernel_size=(1, ), strides=(1, )),
             nn.BatchNorm(axis=-1),
             nn.relu,
-            nn.Conv(features=self.encoder_channels, kernel_size=(1,), strides=(1,)),
+            nn.Conv(features=self.encoder_channels,
+                    kernel_size=(1, ),
+                    strides=(1, )),
         ]
 
     def __call__(self, pc: Array, training: bool = False) -> Array:
@@ -221,9 +221,10 @@ class Encoder(nn.Module):
 
         # Pick global feature and concatenate to feature
         global_feature = jnp.max(
-            feature, axis=1, keepdims=True
-        )  # max pooling across all points in a group
-        feature = jnp.concatenate([global_feature.repeat(M, axis=1), pc], axis=-1)
+            feature, axis=1,
+            keepdims=True)  # max pooling across all points in a group
+        feature = jnp.concatenate([global_feature.repeat(M, axis=1), pc],
+                                  axis=-1)
         # (G, M, 256) || (G, 1, 256) -> (G, M, 512)
 
         # Second convolution
@@ -232,8 +233,8 @@ class Encoder(nn.Module):
 
         # get the feature vector for the center
         global_feature = jnp.max(
-            feature, axis=1, keepdims=False
-        )  # Max pooling across all points in a group
+            feature, axis=1,
+            keepdims=False)  # Max pooling across all points in a group
         return global_feature.reshape(G, -1)  # (G, encoder_channels)
 
 
@@ -268,19 +269,18 @@ class MixerModelForSegmentation(nn.Module):
                 conv_bias=self.conv_bias,
                 bias=self.bias,
                 drop_path=self.drop_path,
-            )
-            for _ in range(self.n_layer)
+            ) for _ in range(self.n_layer)
         ]
 
-        self.out_norm = (
-            RMSNorm(self.d_model, eps=self.norm_eps)
-            if self.rms_norm
-            else nn.LayerNorm(epsilon=self.norm_eps)
-        )
+        self.out_norm = (RMSNorm(self.d_model, eps=self.norm_eps)
+                         if self.rms_norm else nn.LayerNorm(
+                             epsilon=self.norm_eps))
 
-    def __call__(
-        self, x: Array, pos: Array, droppath_key: KeyArray, training: bool = False
-    ) -> List[Array]:
+    def __call__(self,
+                 x: Array,
+                 pos: Array,
+                 droppath_key: KeyArray,
+                 training: bool = False) -> List[Array]:
         """
         Returns the features from the layers specified in fetch_idx.
 
@@ -337,9 +337,8 @@ class PointMamba(nn.Module):
         ), f"Encoder channels : {self.config.encoder_channels} and d_model : {self.config.mamba_args.d_model} must be same."
 
         # Grouper
-        self.grouper = Group(
-            num_group=self.config.num_group, group_size=self.config.group_size
-        )
+        self.grouper = Group(num_group=self.config.num_group,
+                             group_size=self.config.group_size)
 
         # Encoder
         self.encoder = Encoder(encoder_channels=self.config.encoder_channels)
@@ -365,28 +364,26 @@ class PointMamba(nn.Module):
 
         # Figure out from paper but is used in Convolution over labels
         self.label_conv = [
-            nn.Conv(features=64, kernel_size=(1,), use_bias=False),
+            nn.Conv(features=64, kernel_size=(1, ), use_bias=False),
             nn.BatchNorm(axis=-1),
             nn.leaky_relu,
         ]
 
         # Process embedded points using PointNet
         self.propagation_0 = pn2_utils.PointNetFeaturePropagation(
-            mlp=[self.config.mamba_args.d_model * 4, 1024]
-        )
+            mlp=[self.config.mamba_args.d_model * 4, 1024])
 
         # Post-process using simple NN layers
         self.post_layers = [
-            nn.Conv(
-                features=512, kernel_size=(1,)
-            ),  # figure out why 3392 is the number of input channels?
+            nn.Conv(features=512, kernel_size=(
+                1, )),  # figure out why 3392 is the number of input channels?
             nn.BatchNorm(),
             nn.relu,
             Dropout(0.5),
-            nn.Conv(features=256, kernel_size=(1,)),
+            nn.Conv(features=256, kernel_size=(1, )),
             nn.BatchNorm(),
             nn.relu,
-            nn.Conv(features=self.classes, kernel_size=(1,)),
+            nn.Conv(features=self.classes, kernel_size=(1, )),
         ]
 
     def __call__(
@@ -436,11 +433,10 @@ class PointMamba(nn.Module):
         # divide the point cloud in the same form. This is important
         neighborhood, center = self.grouper(pts, fps_key)  # (G, M, 3), (G, 3)
         group_input_tokens = self.encoder(
-            neighborhood, training=training
-        )  # (G, encoder_channels)
+            neighborhood, training=training)  # (G, encoder_channels)
 
         # Positional encoding
-        pos = customSequential(center, self.pos_emb) # (G, d_model)
+        pos = customSequential(center, self.pos_emb)  # (G, d_model)
 
         # Reorder, first sort acc to x, then y then z and concatenate
         center_x = center[:, 0].argsort(axis=-1)[:, None]  # (G, 1)
@@ -450,8 +446,7 @@ class PointMamba(nn.Module):
         inds = [center_x, center_y, center_z]
 
         group_input_tokens = sortSelectAndConcat(
-            group_input_tokens, inds
-        )  # (G*3, encoder_channels)
+            group_input_tokens, inds)  # (G*3, encoder_channels)
         pos = sortSelectAndConcat(pos, inds)
         center = sortSelectAndConcat(center, inds)
 
@@ -465,14 +460,18 @@ class PointMamba(nn.Module):
         # (G*3, d_model) * len(fetch_idx)
 
         features_list = [
-            customTranspose(self.post_norm(feature)) for feature in features_list
+            customTranspose(self.post_norm(feature))
+            for feature in features_list
         ]
-        x = jnp.concatenate(features_list, axis=1)  # (d_model*len(fetch_idx), G*3)
+        x = jnp.concatenate(features_list,
+                            axis=1)  # (d_model*len(fetch_idx), G*3)
 
         x_max = jnp.max(x, axis=1)  # (d_model*len(fetch_idx)), max_pooling
         x_avg = jnp.mean(x, axis=1)  # mean_pooling
-        x_max_feature = expand_dims(x_max, dimensions=[-1]).repeat(repeats=N, axis=-1)
-        x_avg_feature = expand_dims(x_avg, dimensions=[-1]).repeat(repeats=N, axis=-1)
+        x_max_feature = expand_dims(x_max, dimensions=[-1]).repeat(repeats=N,
+                                                                   axis=-1)
+        x_avg_feature = expand_dims(x_avg, dimensions=[-1]).repeat(repeats=N,
+                                                                   axis=-1)
         # (d_model*len(fetch_idx), N)
 
         # Need to tell the model about the class label so it can segment parts
@@ -484,24 +483,24 @@ class PointMamba(nn.Module):
             training=training,
             **{"negative_slope": self.config.leaky_relu_slope},
         )
-        cls_label_feature = customTranspose(cls_label_one_hot.repeat(repeats=N, axis=0))
+        cls_label_feature = customTranspose(
+            cls_label_one_hot.repeat(repeats=N, axis=0))
         # (64, N)
 
         x_global_feature = jnp.concatenate(
-            (x_max_feature, x_avg_feature, cls_label_feature), axis=0
-        )
+            (x_max_feature, x_avg_feature, cls_label_feature), axis=0)
         # (d_model*len(fetch_idx)*2 + 64, N)
 
         # Propagate the RAW points through a PointNet
-        f_level_0 = self.propagation_0(
-            customTranspose(pts), customTranspose(center), customTranspose(pts), x
-        )
+        f_level_0 = self.propagation_0(customTranspose(pts),
+                                       customTranspose(center),
+                                       customTranspose(pts), x)
         # (G + 3, N)
 
         # Post-process using simple NN layers
         x = jnp.concatenate(
-            (f_level_0, x_global_feature), axis=0
-        )  # (d_model*len(fetch_idx)*2 + 64 + G + 3, N)
+            (f_level_0, x_global_feature),
+            axis=0)  # (d_model*len(fetch_idx)*2 + 64 + G + 3, N)
         x = customSequential(
             x=customTranspose(x),
             layers=self.post_layers,
@@ -518,18 +517,18 @@ class PointMamba(nn.Module):
         return x
 
 
-def get_model(
-    config: PointMambaArgs, num_classes: int, verbose: bool = False
-) -> Tuple[PointMamba, Dict[str, Any]]:
+def get_model(config: PointMambaArgs,
+              num_classes: int,
+              verbose: bool = False) -> Tuple[PointMamba, Dict[str, Any]]:
 
     input_key, model_key, fps_key, droppath_key, dropout_key = random.split(
-        random.PRNGKey(0), 5
-    )
+        random.PRNGKey(0), 5)
     model = PointMamba(classes=num_classes, config=config)
     dummy_x = random.normal(input_key, (3, 1024))
-    dummy_cls = random.randint(
-        input_key, (1,), minval=0, maxval=num_classes, dtype=jnp.int32
-    )
+    dummy_cls = random.randint(input_key, (1, ),
+                               minval=0,
+                               maxval=num_classes,
+                               dtype=jnp.int32)
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
     variables = model.init(
         model_key,
@@ -547,42 +546,12 @@ def get_model(
 
     # Print number of parameters, taken from
     # https://github.com/google/jax/discussions/6153
-    num_params = sum(x.size for x in jax.tree_util.tree_leaves(variables["params"]))
-    print(f"\nInstantiated Point-Mamba has about {num_params/1e6:.3f}M parameters\n")
-
-    return model, variables
-
-
-if __name__ == "__main__":
-
-    mamba_conf = MambaArgs(d_model=384)
-    new_conf = PointMambaArgs(mamba_depth=2, mamba_args=mamba_conf)
-    model, params = get_model(new_conf, num_classes=16)
-
-    # Check for vmap
-
-    ## Prep. i/p
-    x = jnp.ones((100, 3, 1024))
-    cls = jax.nn.one_hot(jnp.ones(100, dtype=jnp.int32), 16)
-
-    ## Prep. keys
-    fps_key, droppath_key, dropout_key = random.split(random.PRNGKey(0), 3)
-    droppath_keys = random.split(droppath_key, x.shape[0])
-    fps_keys = random.split(fps_key, x.shape[0])
-
-    ## Create a vmapped apply function
-    # dropped_apply = jax.tree_util.Partial(model.apply, rngs={"dropout": dropout_key})
-    vmapped_apply = jax.vmap(model.apply, in_axes=(None, 0, 0, 0, 0, None, None))
-    vmap_time = time()
-    out = vmapped_apply(
-        params, x, cls, fps_keys, droppath_keys, dropout_key, True
-    )  # {}
-    print(f"vmapped apply took {time() - vmap_time:.3f}s")
-    
-    jitted_vmapped_apply = jax.jit(vmapped_apply)
-    jit_time = time()
-    out = jitted_vmapped_apply(
-        params, x, cls, fps_keys, droppath_keys, dropout_key, True
+    num_params = sum(x.size
+                     for x in jax.tree_util.tree_leaves(variables["params"]))
+    print(
+        f"\nInstantiated Point-Mamba has about {num_params/1e6:.3f}M parameters\n"
     )
-    print(f"jitted apply took {time() - jit_time:.3f}s")
-    print(out.shape)
+
+    params, batch_stats = variables['params'], variables['batch_stats']
+
+    return model, params, batch_stats

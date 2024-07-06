@@ -85,6 +85,7 @@ def main():
 
     # Logging
     timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
+    
     # Create overall LOG directory
     exp_dir = Path("./log/")
     exp_dir.mkdir(exist_ok=True)
@@ -120,89 +121,6 @@ def main():
     test_dataloader = JAXDataLoader(
         test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
     )
-
-    # Create model
-    model, params = get_model(point_mamba_args, num_cls)
-    vmapped_apply = jax.vmap(model.apply, in_axes=(None, 0, 0, 0, 0, None))
-
-    # Create the cosine learning rate schedule
-    lr_schedule = optax.cosine_decay_schedule(
-        init_value=learning_rate,
-        decay_steps=num_epochs * len(train_dataloader),
-    )
-
-    # Create the AdamW optimizer with the cosine schedule
-    optimizer = optax.adamw(
-        learning_rate=lr_schedule,
-        weight_decay=weight_decay,  # Adjust the weight decay as needed
-    )
-
-    # Create state
-    train_state = TrainState.create(
-        apply_fn=vmapped_apply,
-        params=params,
-        key=random.PRNGKey(0),
-        tx=optimizer,
-    )
-
-    # create loss function
-    def loss_fn(outputs, targets):
-
-        return optax.softmax_cross_entropy(outputs, targets).mean()
-
-    # Storage for best metrics
-    best_acc = 0.0
-    best_class_avg_iou = 0.0
-    best_instance_avg_iou = 0.0
-
-    # initialize Keys required
-    all_keys = random.split(random.PRNGKey(0), 5)
-    fps_key, droppath_key, dropout_key, scale_key, shift_key = all_keys
-
-    for epoch in range(num_epochs):
-
-        loss_batch = []
-        num_iter = 0
-
-        for pts, cls_label, targets in train_dataloader:
-
-            num_iter += 1
-            # Randomly scale the point cloud
-            scale_key, used_key = random.split(scale_key)
-            points = batched_random_scale_point_cloud(pts, used_key)
-
-            # Randomly shift the point cloud
-            shift_key, used_key = random.split(shift_key)
-            points = batched_shift_point_cloud(points, used_key)
-
-            # for input to the model
-            points = customTranspose(points)
-            cls_label = nn.one_hot(cls_label, num_cls)
-            
-            # Forward pass
-            fps_keys = random.split(fps_key, batch_size + 1)
-            fps_key, used_fps_key = fps_keys[0], fps_keys[1:]
-
-            droppath_keys = random.split(droppath_key, batch_size + 1)
-            droppath_key, used_droppath_key = droppath_keys[0], droppath_keys[1:]
-
-            dropout_key, used_dropout_key = random.split(dropout_key)
-
-            logits = train_state.apply_fn(
-                params,
-                points,
-                cls_label,
-                used_fps_key,
-                used_droppath_key,
-                True,
-                rngs={"dropout": used_dropout_key},
-            )
-            
-            # Compute loss
-            loss = loss_fn(logits, targets)
-            loss_batch.append(loss)
-            
-            # Compute gradients
             
 
 

@@ -5,7 +5,9 @@ from jax._src.basearray import Array
 
 import flax.linen as nn
 
+from jax import lax
 from typing import Union, Tuple
+from pointnet2_ops import pointnet2_utils
 from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
@@ -66,31 +68,69 @@ def index_points(points: Array, idx: Array) -> Array:
     return new_points
 
 
-def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
-    """
-    Input:
-        xyz: pointcloud data, [N, 3]
-        npoint: number of samples
-        fps_key: random key
-    Return:
-        centroids: sampled pointcloud index, [npoint]
-    """
+# def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
+#     """
+#     Input:
+#         xyz: pointcloud data, [N, 3]
+#         npoint: number of samples
+#         fps_key: random key
+#     Return:
+#         centroids: sampled pointcloud index, [npoint]
+#     """
 
+#     N, C = xyz.shape
+
+#     # Initialize the centroids as the zeroth point
+#     centroids = jnp.zeros((npoint,), dtype=jnp.int32)
+
+#     # Set the distance to each point as infinity (very large number)
+#     distance = jnp.ones((N,)) * 1e10
+
+#     # Randomly select the farthest point, the [0] is somehow necessary
+#     # FIXME: I don't know why this is necessary
+#     farthest = jax.random.randint(fps_key, (1,), 0, N)[0]
+
+#     def body_fn(i: int, val: Tuple[Array, Array, Array]):
+#         centroids, distance, farthest = val
+
+#         # Set a new centroid as the farthest point
+#         centroids = centroids.at[i].set(farthest)
+
+#         # Get the coordinates of the current centroid
+#         centroid = xyz[farthest, :].reshape(1, C)
+
+#         # Calculate the Euclidean distance between the new centroid and all other points
+#         dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
+
+#         # Update the distance to the nearest centroid for each point
+#         distance = jnp.where(dist < distance, dist, distance)
+
+#         # Get the index of the farthest point from each centroid
+#         farthest = jnp.argmax(distance, axis=-1)
+
+#         return centroids, distance, farthest
+
+#     centroids, _, _ = jax.lax.fori_loop(
+#         0, npoint, body_fn, (centroids, distance, farthest)
+#     )
+#     return centroids
+
+def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: jax.random.KeyArray) -> jnp.ndarray:
     N, C = xyz.shape
 
-    # Initialize the centroids as the zeroth point
+    # Initialize the centroids and distance arrays
     centroids = jnp.zeros((npoint,), dtype=jnp.int32)
-
-    # Set the distance to each point as infinity (very large number)
     distance = jnp.ones((N,)) * 1e10
 
-    # Randomly select the farthest point, the [0] is somehow necessary
-    # FIXME: I don't know why this is necessary
-    farthest = jax.random.randint(fps_key, (1,), 0, N)[0]
+    # Randomly select the first farthest point
+    farthest = jax.random.randint(key, (), 0, N)
 
-    def body_fn(i: int, val: Tuple[Array, Array, Array]):
-        centroids, distance, farthest = val
-
+    def update(state, i):
+        centroids, distance, farthest = state
+        c_shape = centroids.shape
+        d_shape = distance.shape
+        f_shape = farthest.shape
+        
         # Set a new centroid as the farthest point
         centroids = centroids.at[i].set(farthest)
 
@@ -101,16 +141,18 @@ def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
         dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
 
         # Update the distance to the nearest centroid for each point
-        distance = jnp.where(dist < distance, dist, distance)
+        distance = jnp.minimum(distance, dist)
 
         # Get the index of the farthest point from each centroid
-        farthest = jnp.argmax(distance, axis=-1)
-
-        return centroids, distance, farthest
-
-    centroids, _, _ = jax.lax.fori_loop(
-        0, npoint, body_fn, (centroids, distance, farthest)
-    )
+        farthest = jnp.argmax(distance)
+        
+        assert centroids.shape == c_shape
+        assert distance.shape == d_shape
+        assert farthest.shape == f_shape
+        
+        return (centroids, distance, farthest), None
+    
+    (centroids, _, _ ), _ = lax.scan(update, (centroids, distance, farthest), jnp.arange(npoint))
     return centroids
 
 
