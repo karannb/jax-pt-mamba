@@ -38,7 +38,7 @@ def random_scale_point_cloud(
         Nx3 array, scaled point cloud
     """
     scales = random.uniform(key, (1, ), minval=scale_low, maxval=scale_high)
-    data = data * scales[:, None, None]
+    data = data * scales[:, None]
     return data
 
 

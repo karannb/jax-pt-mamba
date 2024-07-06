@@ -5,23 +5,22 @@ sys.path.append(".")
 import jax
 from jax import random
 import jax.numpy as jnp
-from jax import grad, jit, vmap
+from jax import jit, vmap
 from jax._src.prng import PRNGKeyArray
 
 import optax
 import datetime
 import numpy as np
+from time import time
 from pathlib import Path
 from functools import partial
 from argparse import ArgumentParser
 from typing import Any, Tuple
-from flax import linen as nn
-from flax.training.train_state import TrainState
 
 from models.mamba import MambaArgs
+from models.pointnet2_utils import customTranspose
 from dataset import PartNormalDataset, JAXDataLoader
 from models.pt_mamba import PointMambaArgs, get_model
-from utils.func_utils import customTranspose
 from utils.provider import jit_batched_random_scale_point_cloud, jit_batched_shift_point_cloud
 
 
@@ -76,8 +75,7 @@ def main():
     # Other params
     num_epochs = 300
     num_cls = 50
-    batch_size = 3
-    num_workers = 1
+    batch_size = 12
     num_points = 2048
     learning_rate = 0.0002
     weight_decay = 0.05
@@ -111,16 +109,11 @@ def main():
         trainval_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        drop_last=True,
     )
     test_dataset = PartNormalDataset(npoints=num_points,
                                      split="test",
                                      normal_channel=False)
-    test_dataloader = JAXDataLoader(test_dataset,
-                                    batch_size=batch_size,
-                                    num_workers=num_workers,
-                                    shuffle=False)
+    test_dataloader = JAXDataLoader(test_dataset, batch_size=batch_size)
 
     # Create model
     model, params, batch_stats = get_model(point_mamba_args, num_cls)
@@ -132,14 +125,14 @@ def main():
     # that, only eval_apply is used with False.
     # 2. It also allows this mutablility of batch_stats to be separated
     partial_train_apply = partial(model.apply, mutable=["batch_stats"])
-    train_apply = jax.jit(jax.vmap(partial_train_apply,
-                                   in_axes=(None, 0, 0, 0, 0, 0, None)),
-                          out_axes=(0, None),
-                          static_argnums=6)
-    eval_apply = jax.jit(jax.vmap(model.apply,
-                                  in_axes=(None, 0, 0, 0, 0, 0, None)),
-                         out_axes=0,
-                         static_argnums=6)
+    train_apply = jit(vmap(partial_train_apply,
+                           in_axes=(None, 0, 0, 0, 0, 0, None),
+                           out_axes=(0, None)),
+                      static_argnums=6)
+    eval_apply = jit(vmap(model.apply,
+                          in_axes=(None, 0, 0, 0, 0, 0, None),
+                          out_axes=0),
+                     static_argnums=6)
 
     # Define the parameters
     decay_steps = 1000  # Total number of steps to decay over
@@ -160,7 +153,7 @@ def main():
                             adamw_optimizer)
 
     # Create training step
-    @jit
+    # @jit
     def train_step(
         optimizer: optax.GradientTransformation,
         batch: Tuple[jnp.ndarray, jnp.ndarray], params: Any, batch_stats: Any
@@ -192,27 +185,30 @@ def main():
         return optimizer, new_params, loss
 
     # Create evaluation step
-    @jit
+    # @jit
     def eval_step(params: Any, batch: Tuple[jnp.ndarray,
                                             jnp.ndarray]) -> jnp.ndarray:
         inputs, targets = batch
-        logits = eval_apply({"params": params, "batch_stats": batch_stats},
-                            inputs, False)
+        logits = eval_apply({
+            "params": params,
+            "batch_stats": batch_stats
+        }, inputs, False)
 
         # Compute accuracy
         preds = jnp.argmax(logits, axis=-1)
         acc = jnp.mean(preds == targets)
 
         return acc
-    
+
     # Initialize the keys
-    fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(random.PRNGKey(0), 5)
-    
+    fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
+        random.PRNGKey(0), 5)
+
     # Training loop
     for epoch in range(num_epochs):
         # Training
         train_loss = 0.0
-        for _, batch in enumerate(train_dataloader):
+        for i, batch in enumerate(train_dataloader):
             (pts, cls_label, seg) = batch
             
             # generate keys
@@ -226,18 +222,51 @@ def main():
             shift_key, shift_keys = shift_keys[0], shift_keys[1:]
             scale_keys = random.split(scale_key, batch_size + 1)
             scale_key, scale_keys = scale_keys[0], scale_keys[1:]
-            
+
             # Shift and scale the point cloud
-            pts = jit_batched_shift_point_cloud(pts, shift_keys)
-            pts = jit_batched_random_scale_point_cloud(pts, scale_keys)
+            pts = jit_batched_shift_point_cloud(pts, shift_keys, 0.1)
+            pts = jit_batched_random_scale_point_cloud(pts, scale_keys, 0.8,
+                                                       1.25)
+            pts = customTranspose(pts)
+            cls_label = jax.nn.one_hot(cls_label, num_cls)
             
-            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
-            optimizer, params, loss = train_step(optimizer, inputs, params, batch_stats)
+            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
+                     seg)
+            
+            if i < 2:
+                start = time()
+            optimizer, params, loss = train_step(optimizer, batch, params,
+                                                 batch_stats)
+            end = time()
+            if i < 2:
+                print(f"{i} took {end - start} seconds")
+                
             train_loss += loss
 
         # Evaluation
         test_acc = 0.0
-        for _, batch in enumerate(test_dataloader):
+        for i, batch in enumerate(test_dataloader):
+            (pts, cls_label, seg) = batch
+            
+            # generate keys
+            fps_keys = random.split(fps_key, batch_size + 1)
+            fps_key, fps_keys = fps_keys[0], fps_keys[1:]
+            droppath_keys = random.split(droppath_key, batch_size + 1)
+            droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
+            dropout_keys = random.split(dropout_key, batch_size + 1)
+            dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
+            
+            pts = customTranspose(pts)
+            cls_label = jax.nn.one_hot(cls_label, num_cls)
+            
+            if i < 2:
+                start = time()
+            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
+                     seg)
+            end = time()
+            if i < 2:
+                print(f"{i} took {end - start} seconds")
+            
             test_acc += eval_step(params, batch)
 
         # Logging

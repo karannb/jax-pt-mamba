@@ -6,8 +6,7 @@ from jax._src.basearray import Array
 import flax.linen as nn
 
 from jax import lax
-from typing import Union, Tuple
-from pointnet2_ops import pointnet2_utils
+from typing import Union
 from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
@@ -68,59 +67,13 @@ def index_points(points: Array, idx: Array) -> Array:
     return new_points
 
 
-# def farthest_point_sample(xyz: Array, npoint: int, fps_key: KeyArray) -> Array:
-#     """
-#     Input:
-#         xyz: pointcloud data, [N, 3]
-#         npoint: number of samples
-#         fps_key: random key
-#     Return:
-#         centroids: sampled pointcloud index, [npoint]
-#     """
-
-#     N, C = xyz.shape
-
-#     # Initialize the centroids as the zeroth point
-#     centroids = jnp.zeros((npoint,), dtype=jnp.int32)
-
-#     # Set the distance to each point as infinity (very large number)
-#     distance = jnp.ones((N,)) * 1e10
-
-#     # Randomly select the farthest point, the [0] is somehow necessary
-#     # FIXME: I don't know why this is necessary
-#     farthest = jax.random.randint(fps_key, (1,), 0, N)[0]
-
-#     def body_fn(i: int, val: Tuple[Array, Array, Array]):
-#         centroids, distance, farthest = val
-
-#         # Set a new centroid as the farthest point
-#         centroids = centroids.at[i].set(farthest)
-
-#         # Get the coordinates of the current centroid
-#         centroid = xyz[farthest, :].reshape(1, C)
-
-#         # Calculate the Euclidean distance between the new centroid and all other points
-#         dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
-
-#         # Update the distance to the nearest centroid for each point
-#         distance = jnp.where(dist < distance, dist, distance)
-
-#         # Get the index of the farthest point from each centroid
-#         farthest = jnp.argmax(distance, axis=-1)
-
-#         return centroids, distance, farthest
-
-#     centroids, _, _ = jax.lax.fori_loop(
-#         0, npoint, body_fn, (centroids, distance, farthest)
-#     )
-#     return centroids
-
-def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: jax.random.KeyArray) -> jnp.ndarray:
+def farthest_point_sample(xyz: jnp.ndarray, npoint: int,
+                          key: KeyArray) -> jnp.ndarray:
     N, C = xyz.shape
 
     # Initialize the centroids and distance arrays
-    centroids = jnp.zeros((npoint,), dtype=jnp.int32)
-    distance = jnp.ones((N,)) * 1e10
+    centroids = jnp.zeros((npoint, ), dtype=jnp.int32)
+    distance = jnp.ones((N, )) * 1e10
 
     # Randomly select the first farthest point
     farthest = jax.random.randint(key, (), 0, N)
@@ -130,7 +83,7 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: jax.random.KeyArra
         c_shape = centroids.shape
         d_shape = distance.shape
         f_shape = farthest.shape
-        
+
         # Set a new centroid as the farthest point
         centroids = centroids.at[i].set(farthest)
 
@@ -138,21 +91,22 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: jax.random.KeyArra
         centroid = xyz[farthest, :].reshape(1, C)
 
         # Calculate the Euclidean distance between the new centroid and all other points
-        dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
+        dist = jnp.sum((xyz - centroid)**2, axis=-1)
 
         # Update the distance to the nearest centroid for each point
         distance = jnp.minimum(distance, dist)
 
         # Get the index of the farthest point from each centroid
         farthest = jnp.argmax(distance)
-        
+
         assert centroids.shape == c_shape
         assert distance.shape == d_shape
         assert farthest.shape == f_shape
-        
+
         return (centroids, distance, farthest), None
-    
-    (centroids, _, _ ), _ = lax.scan(update, (centroids, distance, farthest), jnp.arange(npoint))
+
+    (centroids, _, _), _ = lax.scan(update, (centroids, distance, farthest),
+                                    jnp.arange(npoint))
     return centroids
 
 
@@ -241,19 +195,17 @@ class PointNetFeaturePropagation(nn.Module):
 
         if points1 is not None:
             points1 = customTranspose(points1)  # [N, D]
-            new_points = jnp.concatenate(
-                [points1, interpolated_points], axis=-1
-            )  # [N, D'+D]
+            new_points = jnp.concatenate([points1, interpolated_points],
+                                         axis=-1)  # [N, D'+D]
         else:
             new_points = interpolated_points  # [N, D']
 
         # new_points = customTranspose(new_points) # [N, *]
         for out_channel in self.mlp:
             new_points = nn.relu(
-                nn.BatchNorm(axis=-1, use_running_average=not training)(
-                    nn.Conv(out_channel, (1,))(new_points)
-                )
-            )
+                nn.BatchNorm(axis=-1,
+                             use_running_average=not training)(nn.Conv(
+                                 out_channel, (1, ))(new_points)))
         # [N, *]
 
         new_points = customTranspose(new_points)  # [*, N]

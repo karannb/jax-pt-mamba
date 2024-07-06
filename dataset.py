@@ -39,7 +39,7 @@ class PartNormalDataset(Dataset):
                 (default=False)
         """
 
-        data_dir = os.environ.get("DATA")
+        data_dir = "./data/" #os.environ.get("DATA")
         if data_dir is None:
             raise ValueError("Please set the DATA environment variable.")
         self.root = os.path.join(data_dir, root)
@@ -214,14 +214,12 @@ def collate_fn(batch):
             A batch of segmentation labels.
     """
 
-    point_list = [point for point, _, _ in batch]
-    cls_list = [cls for _, cls, _ in batch]
-    seg_list = [seg for _, _, seg in batch]
+    point_list, cls_list, seg_list = zip(*batch)
 
-    points = jnp.stack(point_list, axis=0)
-    cls = jnp.stack(cls_list, axis=0)
-    seg = jnp.stack(seg_list, axis=0)
-
+    points = jnp.array(point_list)
+    cls = jnp.array(cls_list)
+    seg = jnp.array(seg_list)
+    
     return points, cls, seg
 
 
