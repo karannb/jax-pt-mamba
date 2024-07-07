@@ -39,7 +39,7 @@ class PartNormalDataset(Dataset):
                 (default=False)
         """
 
-        data_dir = "./data/" #os.environ.get("DATA")
+        data_dir = os.environ.get("DATA_DIR")
         if data_dir is None:
             raise ValueError("Please set the DATA environment variable.")
         self.root = os.path.join(data_dir, root)

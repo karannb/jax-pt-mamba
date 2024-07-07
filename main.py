@@ -127,7 +127,7 @@ def main():
     partial_train_apply = partial(model.apply, mutable=["batch_stats"])
     train_apply = jit(vmap(partial_train_apply,
                            in_axes=(None, 0, 0, 0, 0, 0, None),
-                           out_axes=(0, None)),
+                           out_axes=(0)),
                       static_argnums=6)
     eval_apply = jit(vmap(model.apply,
                           in_axes=(None, 0, 0, 0, 0, 0, None),
@@ -151,38 +151,39 @@ def main():
     # Combine the learning rate schedule with the optimizer
     optimizer = optax.chain(optax.scale_by_schedule(scheduler),
                             adamw_optimizer)
-
+    opt_state = optimizer.init(params)
+    
     # Create training step
     # @jit
     def train_step(
-        optimizer: optax.GradientTransformation,
+        optimizer: optax.GradientTransformation, opt_state: Any,
         batch: Tuple[jnp.ndarray, jnp.ndarray], params: Any, batch_stats: Any
     ) -> Tuple[optax.GradientTransformation, Any, jnp.ndarray]:
 
         # Define the loss function
         def loss_fn(params):
             inputs, targets = batch
-            logits, updates = train_apply(
+            (logits, updates) = train_apply(
                 {
                     "params": params,
                     "batch_stats": batch_stats
                 }, *inputs, True)
             return jnp.mean(
-                optax.softmax_cross_entropy(logits=logits,
+                optax.softmax_cross_entropy_with_integer_labels(logits=logits,
                                             labels=targets)), updates
 
         # Create a function to compute the gradient
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
         # Compute the loss, the gradient and get aux updates
         (loss, updates), grads = grad_fn(params)
-        # Update the optimizer
-        optimizer = optimizer.update(grads)
-        # Update the parameters
-        new_params = optax.apply_updates(params, updates)
         # Update the batch statistics
         batch_stats = updates["batch_stats"]
+        # get gradients
+        gradients, opt_state = optimizer.update(grads, opt_state, params)
+        # take a lr step
+        params = optax.apply_updates(params, gradients)
 
-        return optimizer, new_params, loss
+        return optimizer, params, loss
 
     # Create evaluation step
     # @jit
@@ -192,7 +193,7 @@ def main():
         logits = eval_apply({
             "params": params,
             "batch_stats": batch_stats
-        }, inputs, False)
+        }, *inputs, False)
 
         # Compute accuracy
         preds = jnp.argmax(logits, axis=-1)
@@ -209,6 +210,8 @@ def main():
         # Training
         train_loss = 0.0
         for i, batch in enumerate(train_dataloader):
+            if i == 10:
+                break
             (pts, cls_label, seg) = batch
             
             # generate keys
@@ -230,22 +233,24 @@ def main():
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
             
-            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
+            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
                      seg)
             
-            if i < 2:
-                start = time()
-            optimizer, params, loss = train_step(optimizer, batch, params,
-                                                 batch_stats)
+            # if i < 10:
+            start = time()
+            optimizer, params, loss = train_step(optimizer, opt_state,
+                                                 inputs, params, batch_stats)
             end = time()
-            if i < 2:
-                print(f"{i} took {end - start} seconds")
+            # if i < 2:
+            print(f"{i} took {end - start} seconds")
                 
             train_loss += loss
 
         # Evaluation
         test_acc = 0.0
         for i, batch in enumerate(test_dataloader):
+            if i == 10:
+                break
             (pts, cls_label, seg) = batch
             
             # generate keys
@@ -259,15 +264,15 @@ def main():
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
             
-            if i < 2:
-                start = time()
-            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
+            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
                      seg)
-            end = time()
-            if i < 2:
-                print(f"{i} took {end - start} seconds")
             
-            test_acc += eval_step(params, batch)
+            # if i < 2:
+            start = time()
+            test_acc += eval_step(params, inputs)
+            end = time()
+            # if i < 2:
+            print(f"{i} took {end - start} seconds")
 
         # Logging
         print(f"Epoch {epoch+1}/{num_epochs}, "

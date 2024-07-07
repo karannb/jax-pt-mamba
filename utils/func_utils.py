@@ -128,7 +128,7 @@ def customSequential(
 
     for layer in layers:
         if isinstance(layer, nn.BatchNorm):
-            x = layer(x, use_running_average=training)
+            x = layer(x, use_running_average=not training)
 
         elif isinstance(layer, Dropout):
             used_key, kwargs["dropout_key"] = random.split(
