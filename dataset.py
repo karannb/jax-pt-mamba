@@ -1,223 +1,204 @@
 import os
-import jax
 import json
+import torch
 import numpy as np
 from time import time
-import jax.numpy as jnp
 from torch.utils.data import Dataset, DataLoader
-from models.pointnet2_utils import pc_normalize
 
 
-class PartNormalDataset(Dataset):
+# Helper functions
+def pc_normalize(pc):
+    """
+    Normalize point cloud data.
 
+    Args:
+        pc (numpy.ndarray): Point cloud data, [N, 3]
+
+    Returns:
+        numpy.ndarray: Normalized point cloud data, [N, 3]
+    """
+    centroid = np.mean(pc, axis=0)
+    pc = pc - centroid
+    m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+    pc = pc / m
+    return pc
+
+
+# Dataset class
+class ShapenetPartDataset(Dataset):
     def __init__(
-        self,
-        root="shapenetcore_partanno_segmentation_benchmark_v0_normal/",
-        npoints=2500,
-        split="train",
-        class_choice=None,
-        normal_channel=False,
+        self, split="train", class_choice=None, normal_channel=False, num_points=2048
     ):
-        """
-        Creates a dataset object for the PartNormalDataset.
-
-        Args
-        ----
-            root: str
-                The root directory of the dataset.
-                (default='shapenetcore_partanno_segmentation_benchmark_v0_normal')
-            npoints: int
-                The number of points to sample from each point cloud.
-                (default=2500)
-            split: str
-                The split of the dataset to use. One of 'train', 'test', 'val', 'trainval'.
-                (default='train')
-            class_choice: list
-                A list of classes to use. If None, all classes are used.
-                (default=None)
-            normal_channel: bool
-                Whether to include normal information in the point cloud.
-                (default=False)
-        """
-
-        data_dir = os.environ.get("SCRATCH") # scratch is the directory for fast i/o
-        if data_dir is None:
-            raise ValueError("Please set the DATA environment variable.")
-        self.root = os.path.join(data_dir, root)
-        self.npoints = npoints
-        self.catfile = os.path.join(self.root, "synsetoffset2category.txt")
-
-        self.key = jax.random.PRNGKey(0)  # for random selection of points
-
-        self.cat = {}
+        self.root = os.path.join(
+            os.environ.get("SCRATCH"),
+            "shapenetcore_partanno_segmentation_benchmark_v0_normal",
+        )
+        self.split = split
+        self.class_choice = class_choice
         self.normal_channel = normal_channel
-
-        with open(self.catfile, "r") as f:
-            for line in f:
-                ls = line.strip().split()
-                self.cat[ls[0]] = ls[1]
-        # self.cat = {k: v for k, v in self.cat.items()} # redundant?
-
-        # create a class to index mapping
-        self.classes_original = dict(zip(self.cat, range(len(self.cat))))
-
-        # map classes to the ones we want to use
-        if not class_choice is None:
-            self.cat = {k: v for k, v in self.cat.items() if k in class_choice}
-
+        self.num_points = num_points
+        self.catfile = os.path.join(self.root, "synsetoffset2category.txt")
+        self.cat = {}
         self.meta = {}
+        self.cache = {}
+        self.cache_size = 80000
 
-        # load train, val, and test splits
-        with open(
-            os.path.join(
-                self.root, "train_test_split", "shuffled_train_file_list.json"
-            ),
-            "r",
-        ) as f:
-            train_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+        self._load_categories()
+        self._load_metadata()
+        self._prepare_data_paths()
+        self._map_classes()
 
-        with open(
-            os.path.join(self.root, "train_test_split", "shuffled_val_file_list.json"),
-            "r",
-        ) as f:
-            val_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+    def _load_categories(self):
+        try:
+            with open(self.catfile, "r") as f:
+                for line in f:
+                    ls = line.strip().split()
+                    self.cat[ls[0]] = ls[1]
+            self.classes_original = dict(zip(self.cat, range(len(self.cat))))
+        except FileNotFoundError:
+            raise Exception(f"Category file not found at {self.catfile}")
 
-        with open(
-            os.path.join(self.root, "train_test_split", "shuffled_test_file_list.json"),
-            "r",
-        ) as f:
-            test_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+        if self.class_choice is not None:
+            self.cat = {k: v for k, v in self.cat.items() if k in self.class_choice}
 
-        # iterate over the categories and load the data
-        # for each category given a split
+    def _load_metadata(self):
+        try:
+            with open(
+                os.path.join(
+                    self.root, "train_test_split", "shuffled_train_file_list.json"
+                ),
+                "r",
+            ) as f:
+                train_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+
+            with open(
+                os.path.join(
+                    self.root, "train_test_split", "shuffled_val_file_list.json"
+                ),
+                "r",
+            ) as f:
+                val_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+
+            with open(
+                os.path.join(
+                    self.root, "train_test_split", "shuffled_test_file_list.json"
+                ),
+                "r",
+            ) as f:
+                test_ids = set([str(d.split("/")[2]) for d in json.load(f)])
+
+        except FileNotFoundError:
+            raise Exception("Train/test/val split files not found")
+
         for item in self.cat:
             self.meta[item] = []
             dir_point = os.path.join(self.root, self.cat[item])
             fns = sorted(os.listdir(dir_point))
-            if split == "trainval":
+
+            if self.split == "trainval":
                 fns = [
                     fn
                     for fn in fns
                     if ((fn[0:-4] in train_ids) or (fn[0:-4] in val_ids))
                 ]
-            elif split == "train":
+            elif self.split == "train":
                 fns = [fn for fn in fns if fn[0:-4] in train_ids]
-            elif split == "val":
+            elif self.split == "val":
                 fns = [fn for fn in fns if fn[0:-4] in val_ids]
-            elif split == "test":
+            elif self.split == "test":
                 fns = [fn for fn in fns if fn[0:-4] in test_ids]
             else:
-                print("Unknown split: %s. Exiting.." % (split))
-                exit(-1)
+                raise ValueError(f"Unknown split: {self.split}")
 
-            # create a list of actual files to load per class
             for fn in fns:
-                token = os.path.splitext(os.path.basename(fn))[0]  # again redundant?
+                token = os.path.splitext(os.path.basename(fn))[0]
                 self.meta[item].append(os.path.join(dir_point, token + ".txt"))
 
-        # this is just a list of tuples of the form (category, filename)
+    def _prepare_data_paths(self):
         self.datapath = []
         for item in self.cat:
             for fn in self.meta[item]:
                 self.datapath.append((item, fn))
 
-        # self.classes is a redundant mapping from category ('Chair') to an int (0) ????
-        self.classes = {}
-        for i in self.cat.keys():
-            self.classes[i] = self.classes_original[i]
-
-        # Mapping from category ('Chair') to a list of int [10,11,12,13] as segmentation labels
+    def _map_classes(self):
+        self.classes = {i: self.classes_original[i] for i in self.cat.keys()}
         self.seg_classes = {
-            "Earphone": [16, 17, 18],
-            "Motorbike": [30, 31, 32, 33, 34, 35],
-            "Rocket": [41, 42, 43],
-            "Car": [8, 9, 10, 11],
-            "Laptop": [28, 29],
-            "Cap": [6, 7],
-            "Skateboard": [44, 45, 46],
-            "Mug": [36, 37],
-            "Guitar": [19, 20, 21],
-            "Bag": [4, 5],
-            "Lamp": [24, 25, 26, 27],
-            "Table": [47, 48, 49],
             "Airplane": [0, 1, 2, 3],
-            "Pistol": [38, 39, 40],
+            "Bag": [4, 5],
+            "Cap": [6, 7],
+            "Car": [8, 9, 10, 11],
             "Chair": [12, 13, 14, 15],
+            "Earphone": [16, 17, 18],
+            "Guitar": [19, 20, 21],
             "Knife": [22, 23],
+            "Lamp": [24, 25, 26, 27],
+            "Laptop": [28, 29],
+            "Motorbike": [30, 31, 32, 33, 34, 35],
+            "Mug": [36, 37],
+            "Pistol": [38, 39, 40],
+            "Rocket": [41, 42, 43],
+            "Skateboard": [44, 45, 46],
+            "Table": [47, 48, 49],
         }
-
-        # cache for the dataset! interesting...
-        self.cache = {}  # from index to (point_set, cls, seg) tuple
-        self.cache_size = 20000
+        self.identity = np.eye(50)
 
     def __getitem__(self, index):
-
-        # check cache first
+        # object is cached in memory
         if index in self.cache:
-            point_set, cls, seg = self.cache[index]
+            point_set, object_label, seg = self.cache[index]
+
+        # read the object from disk
         else:
+            fn = self.datapath[index]
+            cat = self.datapath[index][0]
+            object_label = int(self.classes[cat])
+            data = np.loadtxt(fn[1]).astype(np.float32)
 
-            # get the category and filename
-            cat, fn = self.datapath[index]
-            cls = self.classes[cat]
-            cls = np.array([cls], dtype=np.int32)
-            data = np.loadtxt(fn, dtype=np.float32)# load the point cloud data
-
-            # pick surface normals or not
             if not self.normal_channel:
                 point_set = data[:, 0:3]
             else:
                 point_set = data[:, 0:6]
 
-            # the last column is the segmentation label for the part
             seg = data[:, -1].astype(np.int32)
 
-            # cache the data
             if len(self.cache) < self.cache_size:
-                self.cache[index] = (point_set, cls, seg)
+                self.cache[index] = (point_set, object_label, seg)
 
-        # normalize the point cloud
+        # normalize x, y and z coordinates
         point_set[:, 0:3] = pc_normalize(point_set[:, 0:3])
 
-        # split the key and sample the points
-        choice = np.random.choice(len(seg), self.npoints, replace=True)
-                
-        # select
+        # select num_points points from the sequence with replacement
+        choice = np.random.choice(len(seg), self.num_points, replace=True)
+
+        # resample
         point_set = point_set[choice, :]
         seg = seg[choice]
 
-        return point_set, cls, seg
+        # # Sort the points according to the key (x_coord, y_coord, z_coord)
+        # sorted_indices = np.lexsort((point_set[:, 2], point_set[:, 1], point_set[:, 0]))
+        # point_set = point_set[sorted_indices, 1:]
+
+        # seg = seg[sorted_indices]
+        # seg = self.identity[seg]
+
+        return point_set, object_label, seg
 
     def __len__(self):
         return len(self.datapath)
 
 
-def collate_fn(batch):
-    """
-    Collates a batch of data.
+def numpy_collate_fn(batch):
+    points, object_labels, segmentation_labels = zip(*batch)
 
-    Args
-    ----
-        batch: list
-            A list of tuples of the form (point_set, cls, seg).
+    object_labels = np.array(object_labels)
 
-    Returns
-    -------
-        points: jnp.array
-            A batch of point clouds.
-        cls: jnp.array
-            A batch of class labels.
-        seg: jnp.array
-            A batch of segmentation labels.
-    """
+    tokens = np.array(points)
+    targets = np.array(segmentation_labels)
 
-    point_list, cls_list, seg_list = zip(*batch)
-
-    points = jnp.array(point_list)
-    cls = jnp.array(cls_list)
-    seg = jnp.array(seg_list)
-    
-    return points, cls, seg
+    # timesteps = tokens[:, :, 0]
+    # timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
+    # lengths = np.array([len(seq) for seq in tokens])[..., None]
+    return tokens, object_labels, targets  # , timesteps, lengths
 
 
 class JAXDataLoader(DataLoader):
@@ -241,7 +222,7 @@ class JAXDataLoader(DataLoader):
             sampler=sampler,
             batch_sampler=batch_sampler,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=numpy_collate_fn,
             pin_memory=pin_memory,
             drop_last=drop_last,
             timeout=timeout,
@@ -249,14 +230,27 @@ class JAXDataLoader(DataLoader):
         )
 
 
+# Main function
+def main():
+    # train_loader, _, _ = dataloader_generator(seed=0)
+    train_data = ShapenetPartDataset(
+        (
+            "/p/project1/eelsaisdc/bania1/data/"
+            "shapenetcore_partanno_segmentation_benchmark_v0_normal"
+        )
+    )
+    train_loader = JAXDataLoader(train_data, batch_size=4, shuffle=True)
+
+    n = len(train_loader)
+    iterator = iter(train_loader)
+    end = None
+    for i in range(n):
+        start = time()
+        batch = next(iterator)
+        if end != None:
+            print(f"Time taken for batch {i+1}: {start - end:.4f} seconds")
+        end = time()
+
+
 if __name__ == "__main__":
-    data = PartNormalDataset(split="train", normal_channel=False)
-    dataloader = JAXDataLoader(data, batch_size=4, shuffle=True)
-    init = time()
-    for point, label, seg in dataloader:
-        cur = time()
-        print(f"Time: {cur - init:.2f}s")
-        # print(point.shape)
-        # print(type(point))
-        # print(label.shape)
-        init = time()
+    main()

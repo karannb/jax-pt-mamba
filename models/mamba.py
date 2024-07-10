@@ -266,11 +266,11 @@ class MambaBlock(nn.Module):
             y = jnp.einsum("d n, n -> d", x, C[i, :])
             ys.append(y)
         y = jnp.stack(ys, axis=0)  # shape (l, d_in)
-        
+
         y = y + u * D
-        
+
         return y
-        
+
         # def body_fn(i, carry):
         #     x, ys = carry
         #     x = deltaA[i] * x + deltaB_u[i]
@@ -281,7 +281,7 @@ class MambaBlock(nn.Module):
         # x = jnp.zeros((d_in, n))
         # ys = jnp.zeros((l, d_in))
         # x, ys = jax.lax.fori_loop(0, l, body_fn, (x, ys))
-        
+
         # def scan_fn(carry, i):
         #     x, ys = carry
         #     x = deltaA[i] * x + deltaB_u[i]

@@ -12,6 +12,7 @@ from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
 
+
 def pc_normalize(pc: np.ndarray) -> np.ndarray:
     """
     Normalize a point cloud.
@@ -67,13 +68,12 @@ def index_points(points: Array, idx: Array) -> Array:
     return new_points
 
 
-def farthest_point_sample(xyz: jnp.ndarray, npoint: int,
-                          key: KeyArray) -> jnp.ndarray:
+def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: KeyArray) -> jnp.ndarray:
     N, C = xyz.shape
 
     # Initialize the centroids and distance arrays
-    centroids = jnp.zeros((npoint, ), dtype=jnp.int32)
-    distance = jnp.ones((N, )) * 1e10
+    centroids = jnp.zeros((npoint,), dtype=jnp.int32)
+    distance = jnp.ones((N,)) * 1e10
 
     # Randomly select the first farthest point
     farthest = jax.random.randint(key, (), 0, N)
@@ -91,7 +91,7 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int,
         centroid = xyz[farthest, :].reshape(1, C)
 
         # Calculate the Euclidean distance between the new centroid and all other points
-        dist = jnp.sum((xyz - centroid)**2, axis=-1)
+        dist = jnp.sum((xyz - centroid) ** 2, axis=-1)
 
         # Update the distance to the nearest centroid for each point
         distance = jnp.minimum(distance, dist)
@@ -105,8 +105,9 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int,
 
         return (centroids, distance, farthest), None
 
-    (centroids, _, _), _ = lax.scan(update, (centroids, distance, farthest),
-                                    jnp.arange(npoint))
+    (centroids, _, _), _ = lax.scan(
+        update, (centroids, distance, farthest), jnp.arange(npoint)
+    )
     return centroids
 
 
@@ -140,10 +141,10 @@ def fps(data: Array, number: int, key: KeyArray) -> Array:
 class PointNetFeaturePropagation(nn.Module):
 
     mlp: list
-    
+
     def setup(self):
         self.bns = [nn.BatchNorm(axis=-1) for _ in self.mlp]
-        self.convs = [nn.Conv(out_channel, (1, )) for out_channel in self.mlp]
+        self.convs = [nn.Conv(out_channel, (1,)) for out_channel in self.mlp]
 
     def __call__(
         self,
@@ -198,8 +199,9 @@ class PointNetFeaturePropagation(nn.Module):
 
         if points1 is not None:
             points1 = customTranspose(points1)  # [N, D]
-            new_points = jnp.concatenate([points1, interpolated_points],
-                                         axis=-1)  # [N, D'+D]
+            new_points = jnp.concatenate(
+                [points1, interpolated_points], axis=-1
+            )  # [N, D'+D]
         else:
             new_points = interpolated_points  # [N, D']
 
