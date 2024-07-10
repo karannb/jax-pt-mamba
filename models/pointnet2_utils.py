@@ -140,8 +140,11 @@ def fps(data: Array, number: int, key: KeyArray) -> Array:
 class PointNetFeaturePropagation(nn.Module):
 
     mlp: list
+    
+    def setup(self):
+        self.bns = [nn.BatchNorm(axis=-1) for _ in self.mlp]
+        self.convs = [nn.Conv(out_channel, (1, )) for out_channel in self.mlp]
 
-    @nn.compact
     def __call__(
         self,
         xyz1: Array,
@@ -201,11 +204,11 @@ class PointNetFeaturePropagation(nn.Module):
             new_points = interpolated_points  # [N, D']
 
         # new_points = customTranspose(new_points) # [N, *]
-        for out_channel in self.mlp:
-            new_points = nn.relu(
-                nn.BatchNorm(axis=-1,
-                             use_running_average=not training)(nn.Conv(
-                                 out_channel, (1, ))(new_points)))
+        print(new_points.shape)
+        for conv, bn in zip(self.convs, self.bns):
+            new_points = conv(new_points)
+            new_points = bn(new_points, use_running_average=not training)
+            new_points = nn.relu(new_points)
         # [N, *]
 
         new_points = customTranspose(new_points)  # [*, N]

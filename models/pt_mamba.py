@@ -377,11 +377,11 @@ class PointMamba(nn.Module):
         self.post_layers = [
             nn.Conv(features=512, kernel_size=(
                 1, )),  # figure out why 3392 is the number of input channels?
-            nn.BatchNorm(),
+            nn.BatchNorm(axis=-1),
             nn.relu,
             Dropout(0.5),
             nn.Conv(features=256, kernel_size=(1, )),
-            nn.BatchNorm(),
+            nn.BatchNorm(axis=-1),
             nn.relu,
             nn.Conv(features=self.classes, kernel_size=(1, )),
         ]
