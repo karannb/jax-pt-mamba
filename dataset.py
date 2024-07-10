@@ -2,6 +2,7 @@ import os
 import jax
 import json
 import numpy as np
+from time import time
 import jax.numpy as jnp
 from torch.utils.data import Dataset, DataLoader
 from models.pointnet2_utils import pc_normalize
@@ -39,7 +40,7 @@ class PartNormalDataset(Dataset):
                 (default=False)
         """
 
-        data_dir = os.environ.get("DATA_DIR")
+        data_dir = os.environ.get("SCRATCH") # scratch is the directory for fast i/o
         if data_dir is None:
             raise ValueError("Please set the DATA environment variable.")
         self.root = os.path.join(data_dir, root)
@@ -159,10 +160,8 @@ class PartNormalDataset(Dataset):
             # get the category and filename
             cat, fn = self.datapath[index]
             cls = self.classes[cat]
-            cls = jnp.array([cls], dtype=jnp.int32)
-            data = jnp.array(
-                np.loadtxt(fn), dtype=jnp.float32
-            )  # load the point cloud data
+            cls = np.array([cls], dtype=np.int32)
+            data = np.loadtxt(fn, dtype=np.float32)# load the point cloud data
 
             # pick surface normals or not
             if not self.normal_channel:
@@ -171,20 +170,18 @@ class PartNormalDataset(Dataset):
                 point_set = data[:, 0:6]
 
             # the last column is the segmentation label for the part
-            seg = data[:, -1].astype(jnp.int32)
+            seg = data[:, -1].astype(np.int32)
 
             # cache the data
             if len(self.cache) < self.cache_size:
                 self.cache[index] = (point_set, cls, seg)
 
         # normalize the point cloud
-        point_set = point_set.at[:, 0:3].set(pc_normalize(point_set[:, 0:3]))
+        point_set[:, 0:3] = pc_normalize(point_set[:, 0:3])
 
         # split the key and sample the points
-        key, self.key = jax.random.split(self.key)
-        to_sample = jnp.array(list(range(len(seg))))
-        choice = jax.random.choice(key, to_sample, (self.npoints,), replace=True)
-        
+        choice = np.random.choice(len(seg), self.npoints, replace=True)
+                
         # select
         point_set = point_set[choice, :]
         seg = seg[choice]
@@ -254,8 +251,12 @@ class JAXDataLoader(DataLoader):
 
 if __name__ == "__main__":
     data = PartNormalDataset(split="train", normal_channel=False)
-    dataloader = JAXDataLoader(data, batch_size=12, shuffle=True)
+    dataloader = JAXDataLoader(data, batch_size=4, shuffle=True)
+    init = time()
     for point, label, seg in dataloader:
-        print(point.shape)
-        print(type(point))
-        print(label.shape)
+        cur = time()
+        print(f"Time: {cur - init:.2f}s")
+        # print(point.shape)
+        # print(type(point))
+        # print(label.shape)
+        init = time()

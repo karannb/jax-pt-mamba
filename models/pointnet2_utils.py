@@ -1,4 +1,5 @@
 import jax
+import numpy as np
 import jax.numpy as jnp
 from jax._src import prng
 from jax._src.basearray import Array
@@ -11,8 +12,7 @@ from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
 
-
-def pc_normalize(pc: Array) -> Array:
+def pc_normalize(pc: np.ndarray) -> np.ndarray:
     """
     Normalize a point cloud.
 
@@ -22,9 +22,9 @@ def pc_normalize(pc: Array) -> Array:
     Output:
         normalized_pc: normalized point cloud data, [N, 3]
     """
-    centroid = jnp.mean(pc, axis=0)
+    centroid = np.mean(pc, axis=0)
     pc = pc - centroid
-    m = jnp.max(jnp.sqrt(jnp.sum(pc**2, axis=1)))
+    m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
     normalized_pc = pc / m
     return normalized_pc
 
@@ -204,7 +204,6 @@ class PointNetFeaturePropagation(nn.Module):
             new_points = interpolated_points  # [N, D']
 
         # new_points = customTranspose(new_points) # [N, *]
-        print(new_points.shape)
         for conv, bn in zip(self.convs, self.bns):
             new_points = conv(new_points)
             new_points = bn(new_points, use_running_average=not training)

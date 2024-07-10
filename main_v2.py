@@ -3,16 +3,16 @@ import sys
 sys.path.append(".")
 
 import jax
+from jax import jit
 from jax import random
+import flax.linen as nn
 import jax.numpy as jnp
-from jax import jit, vmap
 from jax._src.prng import PRNGKeyArray
 
 import optax
 import datetime
 import numpy as np
 from time import time
-from tqdm import tqdm
 from pathlib import Path
 from functools import partial
 from argparse import ArgumentParser
@@ -29,7 +29,7 @@ def parse_args():
 
     parser = ArgumentParser()
 
-    parser.add_argument("--d_model", type=int, default=32)
+    parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--norm_eps", type=float, default=1e-5)
     parser.add_argument("--rms_norm", type=bool, default=False)
     parser.add_argument("--d_state", type=int, default=16)
@@ -38,12 +38,12 @@ def parse_args():
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=3)
+    parser.add_argument("--mamba_depth", type=int, default=4)
     parser.add_argument("--drop_out", type=float, default=0.0)
     parser.add_argument("--drop_path", type=float, default=0.2)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
-    parser.add_argument("--encoder_channels", type=int, default=32)
+    parser.add_argument("--encoder_channels", type=int, default=128)
     parser.add_argument("--fetch_idx", type=tuple, default=(1, 3, 7))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
@@ -78,8 +78,8 @@ def main():
     num_cls = 50
     batch_size = 4
     num_points = 100
-    learning_rate = 0.0002
-    weight_decay = 0.05
+    learning_rate = 2e-4
+    weight_decay = 5e-2
 
     # Logging
     # timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
@@ -103,18 +103,31 @@ def main():
     # log_dir.mkdir(exist_ok=True)
 
     # Get Dataset and DataLoaders
-    trainval_dataset = PartNormalDataset(npoints=num_points,
-                                         split="trainval",
+    train_dataset = PartNormalDataset(npoints=num_points,
+                                         split="train",
                                          normal_channel=False)
     train_dataloader = JAXDataLoader(
-        trainval_dataset,
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
+        drop_last=True
     )
+    
+    val_dataset = PartNormalDataset(npoints=num_points,
+                                    split="val",
+                                    normal_channel=False)
+    val_dataloader = JAXDataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=True
+    )
+    
     test_dataset = PartNormalDataset(npoints=num_points,
                                      split="test",
                                      normal_channel=False)
-    test_dataloader = JAXDataLoader(test_dataset, batch_size=batch_size)
+    test_dataloader = JAXDataLoader(test_dataset, batch_size=batch_size,
+        drop_last=True)
 
     # Create model
     model, params, batch_stats = get_model(point_mamba_args, num_cls)
@@ -123,14 +136,16 @@ def main():
     # NOTE: this solved 2 issues -
     # 1. because of the static_argnums=6 field, anyways True and False
     # would lead to separate compilation, and this easily allows for
-    # that, only eval_apply is used with False.
+    # that, eval_apply is only used with False.
     # 2. It also allows this mutablility of batch_stats to be separated
-    partial_train_apply = partial(model.apply, mutable=["batch_stats"])
-    train_apply = vmap(partial_train_apply,
-                           in_axes=(None, 0, 0, 0, 0, 0, None))
-    eval_apply = vmap(model.apply,
+    partial_train_apply = partial(model.apply, mutable=['batch_stats'])
+    train_apply = nn.vmap(partial_train_apply,
+                           in_axes=(None, 0, 0, 0, 0, 0, None),
+                           out_axes=(0, None))
+                    #   static_argnums=6)
+    eval_apply = nn.vmap(model.apply,
                           in_axes=(None, 0, 0, 0, 0, 0, None))
-
+                    # static_argnums=6)
     # Define the parameters
     decay_steps = 1000  # Total number of steps to decay over
 
@@ -150,63 +165,35 @@ def main():
                             adamw_optimizer)
     opt_state = optimizer.init(params)
     
-    # Create training step
-    @jit
-    def train_step(
-        opt_state: Any,
-        batch: Tuple[jnp.ndarray, jnp.ndarray], params: Any, batch_stats: Any
-    ) -> Tuple[optax.GradientTransformation, Any, jnp.ndarray]:
-
-        # Define the loss function
-        def loss_fn(params):
-            inputs, targets = batch
-            (logits, updates) = train_apply(
-                {
-                    "params": params,
-                    "batch_stats": batch_stats
-                }, *inputs, True)
-            return jnp.mean(
-                optax.softmax_cross_entropy_with_integer_labels(logits=logits,
-                                            labels=targets)), updates
-
-        # Create a function to compute the gradient
-        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-        # Compute the loss, the gradient and get aux updates
-        (loss, updates), grads = grad_fn(params)
-        # Update the batch statistics
-        batch_stats = updates["batch_stats"]
-        # get gradients
-        gradients, opt_state = optimizer.update(grads, opt_state, params)
-        # take a lr step
-        params = optax.apply_updates(params, gradients)
-
-        return loss
-
-    # Create evaluation step
-    # @jit
-    def eval_step(params: Any, batch: Tuple[jnp.ndarray,
-                                            jnp.ndarray]) -> jnp.ndarray:
-        inputs, targets = batch
-        logits = eval_apply({
-            "params": params,
-            "batch_stats": batch_stats
-        }, *inputs, False)
-
-        # Compute accuracy
-        preds = jnp.argmax(logits, axis=-1)
-        acc = jnp.mean(preds == targets)
-
-        return acc
-
     # Initialize the keys
     fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
         random.PRNGKey(0), 5)
+    
+    def loss(params, batch_stats, inputs, targets):
+        logits, updates = train_apply({
+            "params": params,
+            "batch_stats": batch_stats
+        }, *inputs, True)
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
+        return loss, updates
+    
+    @jit
+    def update(params, batch_stats, opt_state, inputs, targets):
+        (loss_val, (batch_updates)), grads = jax.value_and_grad(loss, 
+                                                          has_aux=True)(params, batch_stats, inputs, targets)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        batch_stats = batch_updates["batch_stats"]
+        return loss_val
+        
 
+    print("Started Training...")
     # Training loop
     for epoch in range(num_epochs):
         # Training
+        train_time = []
         train_loss = 0.0
-        for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
+        for i, batch in enumerate(train_dataloader):
             (pts, cls_label, seg) = batch
             
             # generate keys
@@ -227,45 +214,16 @@ def main():
                                                        1.25)
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
-            
-            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
+            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
                      seg)
             
-            loss = train_step(opt_state, inputs, params, batch_stats)
-                
-            train_loss += loss
-                        
-        # Logging
-        print(f"Epoch {epoch+1}/{num_epochs}, "
-              f"Train Loss: {train_loss:.4f}")
-
-        # # Evaluation
-        # test_acc = 0.0
-        # for i, batch in enumerate(test_dataloader):
-        #     if i == 10:
-        #         break
-        #     (pts, cls_label, seg) = batch
+            start = time()
+            loss_val = update(params, batch_stats, opt_state, *batch)
+            end = time()
+            train_time += [end - start]
+            train_loss += loss_val
             
-        #     # generate keys
-        #     fps_keys = random.split(fps_key, batch_size + 1)
-        #     fps_key, fps_keys = fps_keys[0], fps_keys[1:]
-        #     droppath_keys = random.split(droppath_key, batch_size + 1)
-        #     droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
-        #     dropout_keys = random.split(dropout_key, batch_size + 1)
-        #     dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
-            
-        #     pts = customTranspose(pts)
-        #     cls_label = jax.nn.one_hot(cls_label, num_cls)
-            
-        #     inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
-        #              seg)
-            
-        #     # if i < 2:
-        #     start = time()
-        #     test_acc += eval_step(params, inputs)
-        #     end = time()
-        #     # if i < 2:
-        #     print(f"{i} took {end - start} seconds")
+            print(f"Epoch: {epoch}, Iteration: {i}, Loss: {loss_val}")
 
 
 if __name__ == "__main__":
