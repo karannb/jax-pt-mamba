@@ -1,7 +1,3 @@
-import sys
-
-sys.path.append(".")
-
 # jax imports
 import jax
 from jax import random
@@ -516,7 +512,7 @@ class PointMamba(nn.Module):
         return x
 
 
-def get_model(
+def getModel(
     config: PointMambaArgs, num_classes: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 

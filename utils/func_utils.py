@@ -86,7 +86,6 @@ def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> 
 
 def customTranspose(x: Array) -> Array:
     """
-    Courtesy of ChatGPT.
     Transpose the last two axes of an array.
     basically, jnp.transpose(x, (-2, -1)), but this
     is not supported in flax.

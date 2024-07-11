@@ -3,28 +3,30 @@ import sys
 sys.path.append(".")
 
 import jax
+from jax import vmap
 from jax import random
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax._src.prng import PRNGKeyArray
 
 import optax
-import datetime
 import numpy as np
 from time import time
 from tqdm import tqdm
-from pathlib import Path
 from functools import partial
 from argparse import ArgumentParser
-from typing import Any, Tuple
 
 from models.mamba import MambaArgs
+from models.pt_mamba import PointMambaArgs
 from models.pointnet2_utils import customTranspose
 from dataset import ShapenetPartDataset, JAXDataLoader
-from models.pt_mamba import PointMambaArgs, get_model
 from utils.provider import (
     jit_batched_random_scale_point_cloud,
     jit_batched_shift_point_cloud,
+)
+from utils.train_utils import (
+    getModelAndOpt,
+    getTrainState,
+    trainStep,
+    evalStep,
+    getIOU,
 )
 
 
@@ -32,7 +34,7 @@ def parse_args():
 
     parser = ArgumentParser()
 
-    parser.add_argument("--d_model", type=int, default=32)
+    parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--norm_eps", type=float, default=1e-5)
     parser.add_argument("--rms_norm", type=bool, default=False)
     parser.add_argument("--d_state", type=int, default=16)
@@ -41,13 +43,13 @@ def parse_args():
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=3)
+    parser.add_argument("--mamba_depth", type=int, default=7)
     parser.add_argument("--drop_out", type=float, default=0.0)
     parser.add_argument("--drop_path", type=float, default=0.2)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
-    parser.add_argument("--encoder_channels", type=int, default=32)
-    parser.add_argument("--fetch_idx", type=tuple, default=(1, 3, 7))
+    parser.add_argument("--encoder_channels", type=int, default=128)
+    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
     args = parser.parse_args()
@@ -78,48 +80,42 @@ def main():
     # Other params
     num_epochs = 300
     num_cls = 50
-    batch_size = 4
     num_points = 100
     learning_rate = 0.0002
-    weight_decay = 0.05
-
-    # Logging
-    # timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
-
-    # Create overall LOG directory
-    # exp_dir = Path("./log/")
-    # exp_dir.mkdir(exist_ok=True)
-
-    # # Create experiment directory
-    # exp_dir = exp_dir.joinpath("part_seg")
-    # exp_dir.mkdir(exist_ok=True)
-
-    # # Create experiment sub-directory
-    # exp_dir = exp_dir.joinpath(timestr)
-    # exp_dir.mkdir(exist_ok=True)
-
-    # # Create sub-directories for checkpoints and logs
-    # checkpoints_dir = exp_dir.joinpath("checkpoints/")
-    # checkpoints_dir.mkdir(exist_ok=True)
-    # log_dir = exp_dir.joinpath("logs/")
-    # log_dir.mkdir(exist_ok=True)
+    weight_decay = 0.00005
 
     # Get Dataset and DataLoaders
     trainval_dataset = ShapenetPartDataset(
         num_points=num_points, split="trainval", normal_channel=False
     )
+    train_bs = max([i for i in range(1, 16 + 1) if len(trainval_dataset) % i == 0])
+    
     train_dataloader = JAXDataLoader(
         trainval_dataset,
-        batch_size=batch_size,
+        batch_size=train_bs,
         shuffle=True,
+        drop_last=True,
     )
     test_dataset = ShapenetPartDataset(
         num_points=num_points, split="test", normal_channel=False
     )
-    test_dataloader = JAXDataLoader(test_dataset, batch_size=batch_size)
+    
+    # get the largest divisor of the length of the dataset
+    divisors = [i for i in range(1, 16 + 1) if len(test_dataset) % i == 0]
+    test_bs = max(divisors) if divisors else None
+    test_dataloader = JAXDataLoader(test_dataset, batch_size=test_bs, shuffle=False)
 
-    # Create model
-    model, params, batch_stats = get_model(point_mamba_args, num_cls)
+    # Create model, optimizer, scheduler and opt_state
+    model, params, batch_stats, optimizer = getModelAndOpt(
+        point_mamba_args,
+        num_cls,
+        False,
+        "adamw",
+        learning_rate,
+        weight_decay,
+        decay_steps=1000,
+        alpha=0.0,
+    )
 
     # Create apply functions for train and eval cases
     # NOTE: this solved 2 issues -
@@ -131,75 +127,7 @@ def main():
     train_apply = vmap(partial_train_apply, in_axes=(None, 0, 0, 0, 0, 0, None))
     eval_apply = vmap(model.apply, in_axes=(None, 0, 0, 0, 0, 0, None))
 
-    # Define the parameters
-    decay_steps = 1000  # Total number of steps to decay over
-
-    # Create the AdamW optimizer
-    adamw_optimizer = optax.adamw(
-        learning_rate=learning_rate, weight_decay=weight_decay
-    )
-
-    # Define the cosine decay scheduler
-    scheduler = optax.cosine_decay_schedule(
-        init_value=learning_rate,  # Initial learning rate
-        decay_steps=decay_steps,  # Total number of steps to decay over
-        alpha=0.0,  # Minimum learning rate value as a fraction of initial
-    )
-
-    # Combine the learning rate schedule with the optimizer
-    optimizer = optax.chain(optax.scale_by_schedule(scheduler), adamw_optimizer)
-    opt_state = optimizer.init(params)
-
-    # Create training step
-    @jit
-    def train_step(
-        opt_state: Any,
-        batch: Tuple[jnp.ndarray, jnp.ndarray],
-        params: Any,
-        batch_stats: Any,
-    ) -> Tuple[optax.GradientTransformation, Any, jnp.ndarray]:
-
-        # Define the loss function
-        def loss_fn(params):
-            inputs, targets = batch
-            (logits, updates) = train_apply(
-                {"params": params, "batch_stats": batch_stats}, *inputs, True
-            )
-            return (
-                jnp.mean(
-                    optax.softmax_cross_entropy_with_integer_labels(
-                        logits=logits, labels=targets
-                    )
-                ),
-                updates,
-            )
-
-        # Create a function to compute the gradient
-        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-        # Compute the loss, the gradient and get aux updates
-        (loss, updates), grads = grad_fn(params)
-        # Update the batch statistics
-        batch_stats = updates["batch_stats"]
-        # get gradients
-        gradients, opt_state = optimizer.update(grads, opt_state, params)
-        # take a lr step
-        params = optax.apply_updates(params, gradients)
-
-        return loss
-
-    # Create evaluation step
-    # @jit
-    def eval_step(params: Any, batch: Tuple[jnp.ndarray, jnp.ndarray]) -> jnp.ndarray:
-        inputs, targets = batch
-        logits = eval_apply(
-            {"params": params, "batch_stats": batch_stats}, *inputs, False
-        )
-
-        # Compute accuracy
-        preds = jnp.argmax(logits, axis=-1)
-        acc = jnp.mean(preds == targets)
-
-        return acc
+    state = getTrainState(params, train_apply, eval_apply, batch_stats, optimizer)
 
     # Initialize the keys
     fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
@@ -210,19 +138,25 @@ def main():
     for epoch in range(num_epochs):
         # Training
         train_loss = 0.0
-        for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
-            (pts, cls_label, seg) = batch
+        ovr_preds = []
+        ovr_labels = []
+        print("*"*89)
+        print("Training...")
+        print("*"*89)
+        start = time()
+        for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
+            (pts, cls_label, seg) = inputs
 
             # generate keys
-            fps_keys = random.split(fps_key, batch_size + 1)
+            fps_keys = random.split(fps_key, train_bs + 1)
             fps_key, fps_keys = fps_keys[0], fps_keys[1:]
-            droppath_keys = random.split(droppath_key, batch_size + 1)
+            droppath_keys = random.split(droppath_key, train_bs + 1)
             droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
-            dropout_keys = random.split(dropout_key, batch_size + 1)
+            dropout_keys = random.split(dropout_key, train_bs + 1)
             dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
-            shift_keys = random.split(shift_key, batch_size + 1)
+            shift_keys = random.split(shift_key, train_bs + 1)
             shift_key, shift_keys = shift_keys[0], shift_keys[1:]
-            scale_keys = random.split(scale_key, batch_size + 1)
+            scale_keys = random.split(scale_key, train_bs + 1)
             scale_key, scale_keys = scale_keys[0], scale_keys[1:]
 
             # Shift and scale the point cloud
@@ -231,42 +165,65 @@ def main():
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
 
-            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
+            # Prepare inputs
+            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
-            loss = train_step(opt_state, inputs, params, batch_stats)
+            # Train step
+            loss, preds = trainStep(state, batch)
 
+            # Log stuff
             train_loss += loss
+            ovr_preds.append(np.array(preds))
+            ovr_labels.append(np.array(seg))
 
         # Logging
-        print(f"Epoch {epoch+1}/{num_epochs}, " f"Train Loss: {train_loss:.4f}")
+        end = time()
+        print(f"Epoch: {epoch}, Loss: {train_loss:.4f}, Time: {end-start:.2f}s")
+        if epoch % 10 == 0:
+            start = time()
+            instance_avg, category_avg = getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
+            print(f"Instance average IoU: {instance_avg:.4f}")
+            print(f"Category average IoU: {category_avg:.4f}")
+            end = time()
+            print(f"Time taken for IoU calculation: {end-start:.2f}s")
 
-        # # Evaluation
-        # test_acc = 0.0
-        # for i, batch in enumerate(test_dataloader):
-        #     if i == 10:
-        #         break
-        #     (pts, cls_label, seg) = batch
+        # Evaluation
+        ovr_preds = []
+        ovr_labels = []
+        print("*"*89)
+        print("Evaluating...")
+        print("*"*89)
+        start = time()
+        for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
+            (pts, cls_label, seg) = inputs
 
-        #     # generate keys
-        #     fps_keys = random.split(fps_key, batch_size + 1)
-        #     fps_key, fps_keys = fps_keys[0], fps_keys[1:]
-        #     droppath_keys = random.split(droppath_key, batch_size + 1)
-        #     droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
-        #     dropout_keys = random.split(dropout_key, batch_size + 1)
-        #     dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
+            # generate keys
+            fps_keys = random.split(fps_key, test_bs + 1)
+            fps_key, fps_keys = fps_keys[0], fps_keys[1:]
+            droppath_keys = random.split(droppath_key, test_bs + 1)
+            droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
+            dropout_keys = random.split(dropout_key, test_bs + 1)
+            dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
+            shift_keys = random.split(shift_key, test_bs + 1)
+            shift_key, shift_keys = shift_keys[0], shift_keys[1:]
+            scale_keys = random.split(scale_key, test_bs + 1)
+            scale_key, scale_keys = scale_keys[0], scale_keys[1:]
 
-        #     pts = customTranspose(pts)
-        #     cls_label = jax.nn.one_hot(cls_label, num_cls)
+            # prepare inputs
+            pts = customTranspose(pts)
+            cls_label = jax.nn.one_hot(cls_label, num_cls)
+            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
-        #     inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys),
-        #              seg)
+            # Eval step
+            loss, preds = evalStep(state, inputs)
+            ovr_preds.append(np.array(preds))
+            ovr_labels.append(np.array(seg))
 
-        #     # if i < 2:
-        #     start = time()
-        #     test_acc += eval_step(params, inputs)
-        #     end = time()
-        #     # if i < 2:
-        #     print(f"{i} took {end - start} seconds")
+        end = time()
+        instance_avg, category_avg = getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
+        print(f"Instance average IoU: {instance_avg:.4f}")
+        print(f"Category average IoU: {category_avg:.4f}")
+        print(f"Test Loss: {loss:.4f}, Took {end-start:.2f}s")
 
 
 if __name__ == "__main__":
