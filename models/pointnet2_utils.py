@@ -143,7 +143,7 @@ class PointNetFeaturePropagation(nn.Module):
     mlp: list
 
     def setup(self):
-        self.bns = [nn.BatchNorm(axis=-1) for _ in self.mlp]
+        self.bns = [nn.BatchNorm(axis=-1, axis_name="batch") for _ in self.mlp]
         self.convs = [nn.Conv(out_channel, (1,)) for out_channel in self.mlp]
 
     def __call__(

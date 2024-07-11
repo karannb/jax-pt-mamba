@@ -8,7 +8,6 @@ from jax.lax import expand_dims
 from flax import linen as nn
 
 # other imports
-from time import time
 from functools import partial
 from dataclasses import dataclass
 from utils.dropout import Dropout
@@ -179,14 +178,14 @@ class Encoder(nn.Module):
 
         self.conv1 = [
             nn.Conv(features=128, kernel_size=(1,), strides=(1,)),
-            nn.BatchNorm(axis=-1),
+            nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.relu,
             nn.Conv(features=256, kernel_size=(1,), strides=(1,)),
         ]
 
         self.conv2 = [
             nn.Conv(features=512, kernel_size=(1,), strides=(1,)),
-            nn.BatchNorm(axis=-1),
+            nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.relu,
             nn.Conv(features=self.encoder_channels, kernel_size=(1,), strides=(1,)),
         ]
@@ -360,7 +359,7 @@ class PointMamba(nn.Module):
         # Figure out from paper but is used in Convolution over labels
         self.label_conv = [
             nn.Conv(features=64, kernel_size=(1,), use_bias=False),
-            nn.BatchNorm(axis=-1),
+            nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.leaky_relu,
         ]
 
@@ -374,11 +373,11 @@ class PointMamba(nn.Module):
             nn.Conv(
                 features=512, kernel_size=(1,)
             ),  # figure out why 3392 is the number of input channels?
-            nn.BatchNorm(axis=-1),
+            nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.relu,
             Dropout(0.5),
             nn.Conv(features=256, kernel_size=(1,)),
-            nn.BatchNorm(axis=-1),
+            nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.relu,
             nn.Conv(features=self.classes, kernel_size=(1,)),
         ]
@@ -496,6 +495,7 @@ class PointMamba(nn.Module):
         x = jnp.concatenate(
             (f_level_0, x_global_feature), axis=0
         )  # (d_model*len(fetch_idx)*2 + 64 + G + 3, N)
+
         x = customSequential(
             x=customTranspose(x),
             layers=self.post_layers,
@@ -506,9 +506,6 @@ class PointMamba(nn.Module):
             },
         )
 
-        # Final pred
-        x = nn.log_softmax(x, axis=1)
-
         return x
 
 
@@ -516,25 +513,41 @@ def getModel(
     config: PointMambaArgs, num_classes: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
+    # Keys for init
     input_key, model_key, fps_key, droppath_key, dropout_key = random.split(
         random.PRNGKey(0), 5
     )
-    model = PointMamba(classes=num_classes, config=config)
-    dummy_x = random.normal(input_key, (3, 1024))
+    fps_keys = random.split(fps_key, 2)
+    droppath_keys = random.split(droppath_key, 2)
+    dropout_keys = random.split(dropout_key, 2)
+    # vmap the class
+    BatchedPointMamba = nn.vmap(
+        PointMamba,
+        in_axes=(0, 0, 0, 0, 0, None),
+        out_axes=0,
+        variable_axes={"params": None, "batch_stats": None},
+        split_rngs={"params": False},
+        axis_name="batch",
+    )
+    # Instantiate the model
+    model = BatchedPointMamba(classes=num_classes, config=config)
+    # Initialize the model
+    dummy_x = random.normal(input_key, (2, 3, 1024))
     dummy_cls = random.randint(
-        input_key, (1,), minval=0, maxval=num_classes, dtype=jnp.int32
+        input_key, (2, 1), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
     variables = model.init(
         model_key,
-        pts=dummy_x,
-        fps_key=fps_key,
-        cls_label=dummy_cls,
-        droppath_key=droppath_key,
-        dropout_key=dropout_key,
-        training=False,
+        dummy_x,
+        dummy_cls,
+        fps_keys,
+        droppath_keys,
+        dropout_keys,
+        False,
     )
 
+    # Print the model parameters
     if verbose:
         # Print the model parameters
         printParams(variables["params"])

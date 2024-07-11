@@ -1,6 +1,5 @@
 import os
 import json
-import torch
 import numpy as np
 from time import time
 from torch.utils.data import Dataset, DataLoader
@@ -173,13 +172,6 @@ class ShapenetPartDataset(Dataset):
         # resample
         point_set = point_set[choice, :]
         seg = seg[choice]
-
-        # # Sort the points according to the key (x_coord, y_coord, z_coord)
-        # sorted_indices = np.lexsort((point_set[:, 2], point_set[:, 1], point_set[:, 0]))
-        # point_set = point_set[sorted_indices, 1:]
-
-        # seg = seg[sorted_indices]
-        # seg = self.identity[seg]
 
         return point_set, object_label, seg
 

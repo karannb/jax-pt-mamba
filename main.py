@@ -3,14 +3,11 @@ import sys
 sys.path.append(".")
 
 import jax
-from jax import vmap
 from jax import random
 
-import optax
 import numpy as np
 from time import time
 from tqdm import tqdm
-from functools import partial
 from argparse import ArgumentParser
 
 from models.mamba import MambaArgs
@@ -43,13 +40,13 @@ def parse_args():
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=7)
+    parser.add_argument("--mamba_depth", type=int, default=12)
     parser.add_argument("--drop_out", type=float, default=0.0)
-    parser.add_argument("--drop_path", type=float, default=0.2)
+    parser.add_argument("--drop_path", type=float, default=0.0)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
     parser.add_argument("--encoder_channels", type=int, default=128)
-    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7))
+    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7, 11))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
     args = parser.parse_args()
@@ -80,16 +77,16 @@ def main():
     # Other params
     num_epochs = 300
     num_cls = 50
-    num_points = 100
+    num_points = 2048
     learning_rate = 0.0002
-    weight_decay = 0.00005
+    weight_decay = 5e-4
 
     # Get Dataset and DataLoaders
     trainval_dataset = ShapenetPartDataset(
         num_points=num_points, split="trainval", normal_channel=False
     )
     train_bs = max([i for i in range(1, 16 + 1) if len(trainval_dataset) % i == 0])
-    
+
     train_dataloader = JAXDataLoader(
         trainval_dataset,
         batch_size=train_bs,
@@ -99,10 +96,9 @@ def main():
     test_dataset = ShapenetPartDataset(
         num_points=num_points, split="test", normal_channel=False
     )
-    
+
     # get the largest divisor of the length of the dataset
-    divisors = [i for i in range(1, 16 + 1) if len(test_dataset) % i == 0]
-    test_bs = max(divisors) if divisors else None
+    test_bs = max([i for i in range(1, 16 + 1) if len(test_dataset) % i == 0])
     test_dataloader = JAXDataLoader(test_dataset, batch_size=test_bs, shuffle=False)
 
     # Create model, optimizer, scheduler and opt_state
@@ -114,20 +110,10 @@ def main():
         learning_rate,
         weight_decay,
         decay_steps=1000,
-        alpha=0.0,
+        alpha=0.0002,
     )
 
-    # Create apply functions for train and eval cases
-    # NOTE: this solved 2 issues -
-    # 1. because of the static_argnums=6 field, anyways True and False
-    # would lead to separate compilation, and this easily allows for
-    # that, only eval_apply is used with False.
-    # 2. It also allows this mutablility of batch_stats to be separated
-    partial_train_apply = partial(model.apply, mutable=["batch_stats"])
-    train_apply = vmap(partial_train_apply, in_axes=(None, 0, 0, 0, 0, 0, None))
-    eval_apply = vmap(model.apply, in_axes=(None, 0, 0, 0, 0, 0, None))
-
-    state = getTrainState(params, train_apply, eval_apply, batch_stats, optimizer)
+    state = getTrainState(model, params, batch_stats, optimizer)
 
     # Initialize the keys
     fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
@@ -140,9 +126,9 @@ def main():
         train_loss = 0.0
         ovr_preds = []
         ovr_labels = []
-        print("*"*89)
+        print("*" * 89)
         print("Training...")
-        print("*"*89)
+        print("*" * 89)
         start = time()
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
             (pts, cls_label, seg) = inputs
@@ -169,7 +155,7 @@ def main():
             batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
             # Train step
-            loss, preds = trainStep(state, batch)
+            state, loss, preds = trainStep(state, batch)
 
             # Log stuff
             train_loss += loss
@@ -178,10 +164,14 @@ def main():
 
         # Logging
         end = time()
-        print(f"Epoch: {epoch}, Loss: {train_loss:.4f}, Time: {end-start:.2f}s")
+        print(
+            f"Epoch: {epoch}, Loss: {train_loss/len(trainval_dataset):.4f}, Time: {end-start:.2f}s"
+        )
         if epoch % 10 == 0:
             start = time()
-            instance_avg, category_avg = getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
+            instance_avg, category_avg = getIOU(
+                np.concatenate(ovr_preds), np.concatenate(ovr_labels)
+            )
             print(f"Instance average IoU: {instance_avg:.4f}")
             print(f"Category average IoU: {category_avg:.4f}")
             end = time()
@@ -190,9 +180,9 @@ def main():
         # Evaluation
         ovr_preds = []
         ovr_labels = []
-        print("*"*89)
+        print("*" * 89)
         print("Evaluating...")
-        print("*"*89)
+        print("*" * 89)
         start = time()
         for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
             (pts, cls_label, seg) = inputs
@@ -215,15 +205,18 @@ def main():
             inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
             # Eval step
-            loss, preds = evalStep(state, inputs)
+            cur_loss, preds = evalStep(state, inputs)
+            loss += cur_loss
             ovr_preds.append(np.array(preds))
             ovr_labels.append(np.array(seg))
 
         end = time()
-        instance_avg, category_avg = getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
+        instance_avg, category_avg = getIOU(
+            np.concatenate(ovr_preds), np.concatenate(ovr_labels)
+        )
         print(f"Instance average IoU: {instance_avg:.4f}")
         print(f"Category average IoU: {category_avg:.4f}")
-        print(f"Test Loss: {loss:.4f}, Took {end-start:.2f}s")
+        print(f"Test Loss: {loss/len(test_dataset):.4f}, Took {end-start:.2f}s")
 
 
 if __name__ == "__main__":

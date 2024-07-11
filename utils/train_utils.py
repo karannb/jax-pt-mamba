@@ -1,11 +1,10 @@
 import jax
 import optax
 import numpy as np
-from flax import struct
 from jax._src import prng
 from jax import jit, numpy as jnp
 from flax.training import train_state
-from typing import Any, Dict, Tuple, Callable, List
+from typing import Any, Dict, Tuple, List
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
 
 # type definitions
@@ -50,16 +49,12 @@ def getModelAndOpt(
     weight_decay: float = 5e-2,
     decay_steps: int = 1000,
     alpha: float = 0.0,
-) -> Tuple[
-    PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation, Any
-]:
+) -> Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation]:
     # Get the model
     model, params, batch_stats = getModel(config, num_classes, verbose)
 
     # Optimizer
-    opt = str2opt[opt_name.lower()](
-        learning_rate=learning_rate, weight_decay=weight_decay
-    )
+    opt = str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay)
 
     # Scheduler
     sched = optax.cosine_decay_schedule(
@@ -68,7 +63,6 @@ def getModelAndOpt(
 
     # Initialize the optimizer and get opt_state
     optimizer = optax.chain(optax.scale_by_schedule(sched), opt)
-    _ = optimizer.init(params)
 
     return model, params, batch_stats, optimizer  # , opt_state
 
@@ -76,23 +70,24 @@ def getModelAndOpt(
 class TrainState(train_state.TrainState):
 
     batch_stats: Dict[str, Any]
-    eval_apply_fn: Callable = struct.field(pytree_node=False)
+    # eval_apply_fn: Callable = struct.field(pytree_node=False)
 
 
 def getTrainState(
+    model: PointMamba,
     params: Dict[str, Any],
-    vampped_apply_fn: Callable,
-    eval_apply_fn: Callable,
+    # vampped_apply_fn: Callable,
+    # eval_apply_fn: Callable,
     batch_stats: Dict[str, Any],
     optimizer: optax.GradientTransformation,
 ) -> TrainState:
 
     state = TrainState.create(
-        apply_fn=vampped_apply_fn,
-        eval_apply_fn=eval_apply_fn,
+        apply_fn=model.apply,
         params=params,
         tx=optimizer,
         batch_stats=batch_stats,
+        # eval_apply_fn=eval_apply_fn,
     )
 
     return state
@@ -115,26 +110,30 @@ def trainStep(
             droppath_keys,
             dropout_keys,
             True,
+            mutable=["batch_stats"],
         )
-        return jnp.mean(
+
+        loss = jnp.sum(
             optax.softmax_cross_entropy_with_integer_labels(
                 logits=logits, labels=targets
             )
-        ), (updates, logits)
+        )
+
+        return loss, (updates, logits)
 
     # Create a function to compute the gradient
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     # Compute the loss, the gradient and get aux updates
     (loss, (updates, logits)), grads = grad_fn(state.params)
-    # Update the batch statistics
-    state = state.replace(batch_stats=updates["batch_stats"])
     # apply the gradients
     state = state.apply_gradients(grads=grads)
+    # Update the batch statistics
+    state = state.replace(batch_stats=updates["batch_stats"])
 
     # get preds
     preds = jnp.argmax(logits, axis=-1)
 
-    return loss, preds
+    return state, loss, preds
 
 
 @jit
@@ -145,7 +144,7 @@ def evalStep(
 
     (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg = batch
 
-    logits = state.eval_apply_fn(
+    logits = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
         pts,
         cls_label,
@@ -156,7 +155,7 @@ def evalStep(
     )
 
     # also return the loss
-    loss = jnp.mean(
+    loss = jnp.sum(
         optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=seg)
     )
 
