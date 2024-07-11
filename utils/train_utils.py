@@ -2,7 +2,7 @@ import jax
 import optax
 import numpy as np
 from jax._src import prng
-from jax import jit, numpy as jnp
+from jax import numpy as jnp
 from flax.training import train_state
 from typing import Any, Dict, Tuple, List
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
@@ -93,10 +93,10 @@ def getTrainState(
     return state
 
 
-@jit
 def trainStep(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
+    dist: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
     # Define the loss function
@@ -125,6 +125,12 @@ def trainStep(
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     # Compute the loss, the gradient and get aux updates
     (loss, (updates, logits)), grads = grad_fn(state.params)
+
+    # Average the loss and the gradients
+    if dist:
+        grads = jax.lax.pmean(grads, axis_name="batch")
+        loss = jax.lax.pmean(loss, axis_name="batch")
+
     # apply the gradients
     state = state.apply_gradients(grads=grads)
     # Update the batch statistics
@@ -133,13 +139,16 @@ def trainStep(
     # get preds
     preds = jnp.argmax(logits, axis=-1)
 
+    if dist:
+        preds = jax.lax.gather(preds, axis_name="batch")
+
     return state, loss, preds
 
 
-@jit
 def evalStep(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
+    dist: bool = False,
 ) -> jnp.ndarray:
 
     (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg = batch
