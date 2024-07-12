@@ -320,8 +320,9 @@ class MixerModelForSegmentation(nn.Module):
 
 class PointMamba(nn.Module):
 
-    classes: int
     config: PointMambaArgs
+    classes: int
+    parts: int
 
     def setup(self):
 
@@ -379,7 +380,7 @@ class PointMamba(nn.Module):
             nn.Conv(features=256, kernel_size=(1,)),
             nn.BatchNorm(axis=-1, axis_name="batch"),
             nn.relu,
-            nn.Conv(features=self.classes, kernel_size=(1,)),
+            nn.Conv(features=self.parts, kernel_size=(1,)),
         ]
 
     def __call__(
@@ -510,7 +511,7 @@ class PointMamba(nn.Module):
 
 
 def getModel(
-    config: PointMambaArgs, num_classes: int, verbose: bool = False
+    config: PointMambaArgs, num_classes: int, num_parts: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
     # Keys for init
@@ -530,7 +531,7 @@ def getModel(
         axis_name="batch",
     )
     # Instantiate the model
-    model = BatchedPointMamba(classes=num_classes, config=config)
+    model = BatchedPointMamba(config=config, classes=num_classes, parts=num_parts)
     # Initialize the model
     dummy_x = random.normal(input_key, (2, 3, 1024))
     dummy_cls = random.randint(

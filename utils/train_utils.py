@@ -43,6 +43,7 @@ str2opt = {
 def getModelAndOpt(
     config: PointMambaArgs,
     num_classes: int,
+    num_part: int,
     verbose: bool = False,
     opt_name: str = "adamw",
     learning_rate: float = 1e-3,
@@ -51,7 +52,7 @@ def getModelAndOpt(
     alpha: float = 0.0,
 ) -> Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation]:
     # Get the model
-    model, params, batch_stats = getModel(config, num_classes, verbose)
+    model, params, batch_stats = getModel(config, num_classes, num_part, verbose)
 
     # Optimizer
     opt = str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay)

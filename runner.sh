@@ -6,11 +6,13 @@
 #SBATCH --nodes=1
 #SBATCH --time=12:00:00
 #SBATCH --mem=64GB
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #SBATCH --output=./logs/%j.out
 #SBATCH --error=./logs/%j.err
 
+# Load the required modules and activate the virtual environment
 source ~/.bash_profile
+load_v1
 source $ENV_DIR/pointmamba/bin/activate
 
-CUDA_VISIBLE_DEVICES=0 python3 main.py
+python3 main.py

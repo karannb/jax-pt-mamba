@@ -46,13 +46,13 @@ def parse_args():
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=7)
+    parser.add_argument("--mamba_depth", type=int, default=9)
     parser.add_argument("--drop_out", type=float, default=0.0)
     parser.add_argument("--drop_path", type=float, default=0.2)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
     parser.add_argument("--encoder_channels", type=int, default=64)
-    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7, 11))
+    parser.add_argument("--fetch_idx", type=tuple, default=(3, 6, 9))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
     args = parser.parse_args()
@@ -82,7 +82,8 @@ def main():
 
     # Other params
     num_epochs = 300
-    num_cls = 50
+    num_cls = 16
+    num_part = 50
     num_points = 2048
     learning_rate = 0.0002
     weight_decay = 5e-4
@@ -126,6 +127,7 @@ def main():
     model, params, batch_stats, optimizer = getModelAndOpt(
         point_mamba_args,
         num_cls,
+        num_part,
         False,
         "adamw",
         learning_rate,
