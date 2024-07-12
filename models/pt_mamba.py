@@ -510,6 +510,17 @@ class PointMamba(nn.Module):
         return x
 
 
+# vmap the class
+BatchedPointMamba = nn.vmap(
+    PointMamba,
+    in_axes=(0, 0, 0, 0, 0, None),
+    out_axes=0,
+    variable_axes={"params": None, "batch_stats": None},
+    split_rngs={"params": False},
+    axis_name="batch",
+)
+
+
 def getModel(
     config: PointMambaArgs, num_classes: int, num_parts: int, verbose: bool = False
 ) -> Tuple[PointMamba, Dict[str, Any]]:
@@ -521,15 +532,6 @@ def getModel(
     fps_keys = random.split(fps_key, 2)
     droppath_keys = random.split(droppath_key, 2)
     dropout_keys = random.split(dropout_key, 2)
-    # vmap the class
-    BatchedPointMamba = nn.vmap(
-        PointMamba,
-        in_axes=(0, 0, 0, 0, 0, None),
-        out_axes=0,
-        variable_axes={"params": None, "batch_stats": None},
-        split_rngs={"params": False},
-        axis_name="batch",
-    )
     # Instantiate the model
     model = BatchedPointMamba(config=config, classes=num_classes, parts=num_parts)
     # Initialize the model

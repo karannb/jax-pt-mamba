@@ -4,7 +4,7 @@
 #SBATCH --account=eelsaisdc
 #SBATCH --partition=booster
 #SBATCH --nodes=1
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=64GB
 #SBATCH --gres=gpu:4
 #SBATCH --output=./logs/%j.out

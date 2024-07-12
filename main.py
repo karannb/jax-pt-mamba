@@ -132,7 +132,7 @@ def main():
         "adamw",
         learning_rate,
         weight_decay,
-        decay_steps=1000,
+        decay_steps=num_epochs * len(train_dataloader) / (num_devices * train_bs),
         alpha=0,
     )
 
@@ -229,11 +229,15 @@ def main():
             f"Epoch: {epoch}, Loss: {train_loss/len(trainval_dataset):.4f}, Time: {end-start:.2f}s"
         )
         if epoch % 10 == 0:
+            # get IOU scores
             instance_avg, category_avg = getIOU(
                 np.concatenate(ovr_preds), np.concatenate(ovr_labels)
             )
             print(f"Instance average IoU: {instance_avg:.4f}")
             print(f"Category average IoU: {category_avg:.4f}")
+            # get accuracy
+            accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
+            print(f"Accuracy: {accuracy*100:.4f}")
 
         # Evaluation
         ovr_preds = []
@@ -291,6 +295,9 @@ def main():
         )
         print(f"Instance average IoU: {instance_avg:.4f}")
         print(f"Category average IoU: {category_avg:.4f}")
+        # get accuracy
+        accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
+        print(f"Accuracy: {accuracy*100:.4f}")
         print(f"Test Loss: {loss/len(test_dataset):.4f}, Took {end-start:.2f}s")
 
 
