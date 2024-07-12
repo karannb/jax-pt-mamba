@@ -40,19 +40,19 @@ def parse_args():
     parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--norm_eps", type=float, default=1e-5)
     parser.add_argument("--rms_norm", type=bool, default=False)
-    parser.add_argument("--d_state", type=int, default=4)
+    parser.add_argument("--d_state", type=int, default=16)
     parser.add_argument("--expand", type=int, default=2)
     parser.add_argument("--dt_rank", default="auto")
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=9)
+    parser.add_argument("--mamba_depth", type=int, default=12)
     parser.add_argument("--drop_out", type=float, default=0.0)
     parser.add_argument("--drop_path", type=float, default=0.2)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
     parser.add_argument("--encoder_channels", type=int, default=64)
-    parser.add_argument("--fetch_idx", type=tuple, default=(3, 6, 9))
+    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7, 11))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
     args = parser.parse_args()
@@ -132,7 +132,7 @@ def main():
         "adamw",
         learning_rate,
         weight_decay,
-        decay_steps=num_epochs * len(train_dataloader) / (num_devices * train_bs),
+        decay_steps=num_epochs * len(train_dataloader),
         alpha=0,
     )
 
