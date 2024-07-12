@@ -128,8 +128,7 @@ def trainStep(
 
     # Average the loss and the gradients
     if dist:
-        grads = jax.lax.pmean(grads, axis_name="batch")
-        loss = jax.lax.pmean(loss, axis_name="batch")
+        grads = jax.lax.pmean(grads, axis_name="data")
 
     # apply the gradients
     state = state.apply_gradients(grads=grads)
@@ -138,9 +137,6 @@ def trainStep(
 
     # get preds
     preds = jnp.argmax(logits, axis=-1)
-
-    if dist:
-        preds = jax.lax.gather(preds, axis_name="batch")
 
     return state, loss, preds
 
