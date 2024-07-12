@@ -4,10 +4,13 @@ sys.path.append(".")
 
 import jax
 from jax import random
+import jax.numpy as jnp
 
 import numpy as np
 from time import time
 from tqdm import tqdm
+from flax import jax_utils
+from functools import partial
 from argparse import ArgumentParser
 
 from models.mamba import MambaArgs
@@ -15,6 +18,8 @@ from models.pt_mamba import PointMambaArgs
 from models.pointnet2_utils import customTranspose
 from dataset import ShapenetPartDataset, JAXDataLoader
 from utils.provider import (
+    batched_random_scale_point_cloud,
+    batched_shift_point_cloud,
     jit_batched_random_scale_point_cloud,
     jit_batched_shift_point_cloud,
 )
@@ -25,27 +30,28 @@ from utils.train_utils import (
     evalStep,
     getIOU,
 )
+from utils.dist_utils import reshape_batch_per_device
 
 
 def parse_args():
 
     parser = ArgumentParser()
 
-    parser.add_argument("--d_model", type=int, default=128)
+    parser.add_argument("--d_model", type=int, default=64)
     parser.add_argument("--norm_eps", type=float, default=1e-5)
     parser.add_argument("--rms_norm", type=bool, default=False)
-    parser.add_argument("--d_state", type=int, default=16)
+    parser.add_argument("--d_state", type=int, default=4)
     parser.add_argument("--expand", type=int, default=2)
     parser.add_argument("--dt_rank", default="auto")
     parser.add_argument("--d_conv", type=int, default=4)
     parser.add_argument("--conv_bias", type=bool, default=True)
     parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=12)
+    parser.add_argument("--mamba_depth", type=int, default=7)
     parser.add_argument("--drop_out", type=float, default=0.0)
-    parser.add_argument("--drop_path", type=float, default=0.0)
+    parser.add_argument("--drop_path", type=float, default=0.2)
     parser.add_argument("--num_group", type=int, default=128)
     parser.add_argument("--group_size", type=int, default=32)
-    parser.add_argument("--encoder_channels", type=int, default=128)
+    parser.add_argument("--encoder_channels", type=int, default=64)
     parser.add_argument("--fetch_idx", type=tuple, default=(3, 7, 11))
     parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
 
@@ -81,11 +87,22 @@ def main():
     learning_rate = 0.0002
     weight_decay = 5e-4
 
+    num_devices = jax.device_count()
+    print(f"Number of devices: {num_devices}")
+
     # Get Dataset and DataLoaders
     trainval_dataset = ShapenetPartDataset(
         num_points=num_points, split="trainval", normal_channel=False
     )
-    train_bs = max([i for i in range(1, 16 + 1) if len(trainval_dataset) % i == 0])
+    train_bs = 16
+    # max(
+    #     [
+    #         i
+    #         for i in range(1, num_devices * 16 + 1)
+    #         if len(trainval_dataset) % i == 0 and i % num_devices == 0
+    #     ]
+    # )
+    print(f"Using batch size: {train_bs}, per device: {int(train_bs/num_devices)}")
 
     train_dataloader = JAXDataLoader(
         trainval_dataset,
@@ -98,8 +115,12 @@ def main():
     )
 
     # get the largest divisor of the length of the dataset
-    test_bs = max([i for i in range(1, 16 + 1) if len(test_dataset) % i == 0])
-    test_dataloader = JAXDataLoader(test_dataset, batch_size=test_bs, shuffle=False)
+    test_bs = 8
+    print(f"Using batch size: {test_bs}, per device: {int(test_bs/num_devices)}")
+
+    test_dataloader = JAXDataLoader(
+        test_dataset, batch_size=test_bs, shuffle=False, drop_last=True
+    )
 
     # Create model, optimizer, scheduler and opt_state
     model, params, batch_stats, optimizer = getModelAndOpt(
@@ -110,7 +131,7 @@ def main():
         learning_rate,
         weight_decay,
         decay_steps=1000,
-        alpha=0.0002,
+        alpha=0,
     )
 
     state = getTrainState(model, params, batch_stats, optimizer)
@@ -119,6 +140,27 @@ def main():
     fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
         random.PRNGKey(0), 5
     )
+
+    # For multi-device training
+    dist = False
+    if num_devices > 1:
+        dist = True
+        state = jax_utils.replicate(state)
+        trainStep_ = jax.pmap(partial(trainStep, dist=True), axis_name="data")
+        evalStep_ = jax.pmap(partial(evalStep, dist=True), axis_name="data")
+        scaler = jax.pmap(
+            batched_random_scale_point_cloud,
+            axis_name="data",
+            in_axes=(0, 0, None, None),
+        )
+        shifter = jax.pmap(
+            batched_shift_point_cloud, axis_name="data", in_axes=(0, 0, None)
+        )
+    else:
+        trainStep_ = jax.jit(partial(trainStep, dist=False))
+        evalStep_ = jax.jit(partial(evalStep, dist=False))
+        scaler = jit_batched_random_scale_point_cloud
+        shifter = jit_batched_shift_point_cloud
 
     # Training loop
     for epoch in range(num_epochs):
@@ -145,9 +187,20 @@ def main():
             scale_keys = random.split(scale_key, train_bs + 1)
             scale_key, scale_keys = scale_keys[0], scale_keys[1:]
 
+            # Reshape the batch per device
+            if dist:
+                pts = reshape_batch_per_device(pts, num_devices)
+                cls_label = reshape_batch_per_device(cls_label, num_devices)
+                seg = reshape_batch_per_device(seg, num_devices)
+                fps_keys = reshape_batch_per_device(fps_keys, num_devices)
+                droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
+                dropout_keys = reshape_batch_per_device(dropout_keys, num_devices)
+                shift_keys = reshape_batch_per_device(shift_keys, num_devices)
+                scale_keys = reshape_batch_per_device(scale_keys, num_devices)
+
             # Shift and scale the point cloud
-            pts = jit_batched_shift_point_cloud(pts, shift_keys, 0.1)
-            pts = jit_batched_random_scale_point_cloud(pts, scale_keys, 0.8, 1.25)
+            pts = shifter(pts, shift_keys, 0.1)
+            pts = scaler(pts, scale_keys, 0.8, 1.25)
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
 
@@ -155,7 +208,13 @@ def main():
             batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
             # Train step
-            state, loss, preds = trainStep(state, batch)
+            state, loss, preds = trainStep_(state, batch)
+
+            # get the overall loss and predictions
+            if dist:
+                preds = preds.reshape(num_devices * train_bs, -1)
+                seg = seg.reshape(num_devices * train_bs, -1)
+                loss = jnp.sum(loss)
 
             # Log stuff
             train_loss += loss
@@ -168,14 +227,11 @@ def main():
             f"Epoch: {epoch}, Loss: {train_loss/len(trainval_dataset):.4f}, Time: {end-start:.2f}s"
         )
         if epoch % 10 == 0:
-            start = time()
             instance_avg, category_avg = getIOU(
                 np.concatenate(ovr_preds), np.concatenate(ovr_labels)
             )
             print(f"Instance average IoU: {instance_avg:.4f}")
             print(f"Category average IoU: {category_avg:.4f}")
-            end = time()
-            print(f"Time taken for IoU calculation: {end-start:.2f}s")
 
         # Evaluation
         ovr_preds = []
@@ -199,13 +255,30 @@ def main():
             scale_keys = random.split(scale_key, test_bs + 1)
             scale_key, scale_keys = scale_keys[0], scale_keys[1:]
 
+            # Reshape the batch per device
+            if dist:
+                pts = reshape_batch_per_device(pts, num_devices)
+                cls_label = reshape_batch_per_device(cls_label, num_devices)
+                seg = reshape_batch_per_device(seg, num_devices)
+                fps_keys = reshape_batch_per_device(fps_keys, num_devices)
+                droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
+                dropout_keys = reshape_batch_per_device(dropout_keys, num_devices)
+                shift_keys = reshape_batch_per_device(shift_keys, num_devices)
+                scale_keys = reshape_batch_per_device(scale_keys, num_devices)
+
             # prepare inputs
             pts = customTranspose(pts)
             cls_label = jax.nn.one_hot(cls_label, num_cls)
             inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
 
             # Eval step
-            cur_loss, preds = evalStep(state, inputs)
+            cur_loss, preds = evalStep_(state, inputs)
+
+            if dist:
+                preds = preds.reshape(num_devices * test_bs, -1)
+                seg = seg.reshape(num_devices * test_bs, -1)
+                cur_loss = jnp.sum(cur_loss)
+
             loss += cur_loss
             ovr_preds.append(np.array(preds))
             ovr_labels.append(np.array(seg))
