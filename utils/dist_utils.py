@@ -4,12 +4,26 @@ from functools import partial
 
 @partial(jax.jit, static_argnums=(1,))
 def reshape_batch_per_device(x, num_devices):
+    '''
+    Reshape the batch per device
+    
+    Args:
+        x: jnp.ndarray, shape=(batch_size, ...)
+        num_devices: int, number of devices
+    '''
     return jax.tree_util.tree_map(
         partial(reshape_array_per_device, num_devices=num_devices), x
     )
 
 
 def reshape_array_per_device(x, num_devices):
+    '''
+    Reshape the array per device
+    
+    Args:
+        x: jnp.ndarray, shape=(batch_size, ...)
+        num_devices: int, number of devices
+    '''
     batch_size_per_device, ragged = divmod(x.shape[0], num_devices)
     if ragged:
         msg = "batch size must be divisible by device count, got {} and {}."

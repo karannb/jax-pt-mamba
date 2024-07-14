@@ -1,10 +1,13 @@
 import jax
 import optax
 import numpy as np
+from jax import random
 from jax._src import prng
 from jax import numpy as jnp
 from flax.training import train_state
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Callable
+from utils.func_utils import customTranspose
+from utils.dist_utils import reshape_batch_per_device
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
 
 # type definitions
@@ -38,6 +41,18 @@ str2opt = {
     "sgd": optax.sgd,
     "adam": optax.adam,
 }
+
+
+class TrainingConfig:
+    batch_size: int = 16
+    num_epochs: int = 300
+    num_points: int = 2048
+    num_workers: int = 0
+    learning_rate: float = 0.0002
+    weight_decay: float = 5e-4
+    alpha_for_decay: float = 0.0
+    with_tracking: bool = False
+    log_every: int = 10
 
 
 def getModelAndOpt(
@@ -77,8 +92,6 @@ class TrainState(train_state.TrainState):
 def getTrainState(
     model: PointMamba,
     params: Dict[str, Any],
-    # vampped_apply_fn: Callable,
-    # eval_apply_fn: Callable,
     batch_stats: Dict[str, Any],
     optimizer: optax.GradientTransformation,
 ) -> TrainState:
@@ -88,10 +101,57 @@ def getTrainState(
         params=params,
         tx=optimizer,
         batch_stats=batch_stats,
-        # eval_apply_fn=eval_apply_fn,
     )
 
     return state
+
+
+def prepInputs(
+    pts,
+    cls_label,
+    seg,
+    fps_key,
+    dropout_key,
+    droppath_key,
+    bs,
+    num_devices,
+    shifter: Callable,
+    scaler: Callable,
+    training=True,
+    dist=False,
+):
+
+    # generate keys
+    fps_keys = random.split(fps_key, bs + 1)
+    fps_key, fps_keys = fps_keys[0], fps_keys[1:]
+    droppath_keys = random.split(droppath_key, bs + 1)
+    droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
+    dropout_keys = random.split(dropout_key, bs + 1)
+    dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
+    shift_keys = random.split(shift_key, bs + 1)
+    shift_key, shift_keys = shift_keys[0], shift_keys[1:]
+    scale_keys = random.split(scale_key, bs + 1)
+    scale_key, scale_keys = scale_keys[0], scale_keys[1:]
+
+    # Reshape the batch per device
+    if dist:
+        pts = reshape_batch_per_device(pts, num_devices)
+        cls_label = reshape_batch_per_device(cls_label, num_devices)
+        seg = reshape_batch_per_device(seg, num_devices)
+        fps_keys = reshape_batch_per_device(fps_keys, num_devices)
+        droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
+        dropout_keys = reshape_batch_per_device(dropout_keys, num_devices)
+        shift_keys = reshape_batch_per_device(shift_keys, num_devices)
+        scale_keys = reshape_batch_per_device(scale_keys, num_devices)
+
+    # Shift and scale the point cloud
+    if training:
+        pts = shifter(pts, shift_keys, 0.1)
+        pts = scaler(pts, scale_keys, 0.8, 1.25)
+    pts = customTranspose(pts)
+    cls_label = jax.nn.one_hot(cls_label, 16)
+
+    return (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg
 
 
 def trainStep(
@@ -129,7 +189,7 @@ def trainStep(
 
     # Average the loss and the gradients
     if dist:
-        grads = jax.lax.psum(grads, axis_name="data")
+        grads = jax.lax.psum(grads, axis_name="device")
 
     # apply the gradients
     state = state.apply_gradients(grads=grads)
@@ -145,7 +205,6 @@ def trainStep(
 def evalStep(
     state: TrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
-    dist: bool = False,
 ) -> jnp.ndarray:
 
     (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg = batch

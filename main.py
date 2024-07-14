@@ -15,50 +15,132 @@ from argparse import ArgumentParser
 
 from models.mamba import MambaArgs
 from models.pt_mamba import PointMambaArgs
-from models.pointnet2_utils import customTranspose
 from dataset import ShapenetPartDataset, JAXDataLoader
-from utils.provider import (
+from utils.augment_utils import (
     batched_random_scale_point_cloud,
     batched_shift_point_cloud,
     jit_batched_random_scale_point_cloud,
     jit_batched_shift_point_cloud,
 )
 from utils.train_utils import (
+    TrainingConfig,
     getModelAndOpt,
     getTrainState,
+    prepInputs,
     trainStep,
     evalStep,
     getIOU,
 )
-from utils.dist_utils import reshape_batch_per_device
-
 
 def parse_args():
 
     parser = ArgumentParser()
 
-    parser.add_argument("--d_model", type=int, default=64)
-    parser.add_argument("--norm_eps", type=float, default=1e-5)
-    parser.add_argument("--rms_norm", type=bool, default=False)
-    parser.add_argument("--d_state", type=int, default=16)
-    parser.add_argument("--expand", type=int, default=2)
-    parser.add_argument("--dt_rank", default="auto")
-    parser.add_argument("--d_conv", type=int, default=4)
-    parser.add_argument("--conv_bias", type=bool, default=True)
-    parser.add_argument("--bias", type=bool, default=False)
-    parser.add_argument("--mamba_depth", type=int, default=12)
-    parser.add_argument("--drop_out", type=float, default=0.0)
-    parser.add_argument("--drop_path", type=float, default=0.2)
-    parser.add_argument("--num_group", type=int, default=128)
-    parser.add_argument("--group_size", type=int, default=32)
-    parser.add_argument("--encoder_channels", type=int, default=64)
-    parser.add_argument("--fetch_idx", type=tuple, default=(3, 7, 11))
-    parser.add_argument("--leaky_relu_slope", type=float, default=0.2)
+    # Mamba arguments
+    parser.add_argument(
+        "--d_model", type=int, default=64, help="Mamba's internal dimension."
+    )
+    parser.add_argument(
+        "--norm_eps", type=float, default=1e-5, help="Epsilon for normalization."
+    )
+    parser.add_argument(
+        "--rms_norm", default=False, action="store_true", help="Use RMSNorm or not."
+    )
+    parser.add_argument(
+        "--d_state", type=int, default=16, help="State dimension inside Mamba."
+    )
+    parser.add_argument(
+        "--expand",
+        type=int,
+        default=2,
+        help="Expansion factor for projection layers, 16 -> 16E.",
+    )
+    parser.add_argument("--dt_rank", default="auto", help="Rank of the 𝚫t.")
+    parser.add_argument(
+        "--d_conv", type=int, default=4, help="Kernel size for convolution."
+    )
+    parser.add_argument(
+        "--no_conv_bias",
+        action="store_true",
+        default=False,
+        help="No bias in convolution.",
+    )
+    parser.add_argument(
+        "--bias",
+        action="store_true",
+        default=False,
+        help="Use bias or not in projection layers.",
+    )
+    parser.add_argument(
+        "--mamba_depth", type=int, default=12, help="Number of Mamba layers to use."
+    )
+    parser.add_argument("--drop_out", type=float, default=0.0, help="Dropout rate.")
+    parser.add_argument("--drop_path", type=float, default=0.2, help="Drop path rate.")
+    # the original paper also has a drop_path_rate parameter, which is used to initialize
+    # a DropPath block but it is never used!
+
+    # PointMamba arguments
+    parser.add_argument(
+        "--num_group",
+        type=int,
+        default=128,
+        help="Number of groups / number of fps sampled points.",
+    )
+    parser.add_argument(
+        "--group_size",
+        type=int,
+        default=32,
+        help="Size of each group, i.e. num_neighboirs of each fps sampled point.",
+    )
+    parser.add_argument(
+        "--encoder_channels",
+        type=int,
+        default=64,
+        help="Number of channels in the encoder pre-mamba.",
+    )
+    parser.add_argument(
+        "--fetch_idx",
+        type=tuple,
+        default=(3, 7, 11),
+        help="Indices to fetch the features.",
+    )
+    parser.add_argument(
+        "--leaky_relu_slope",
+        type=float,
+        default=0.2,
+        help="Slope for leaky relu activation.",
+    )
+
+    # Training arguments
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
+    parser.add_argument("--epochs", type=int, default=300, help="Number of epochs.")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of workers.")
+    parser.add_argument(
+        "--num_points", type=int, default=2048, help="Number of points."
+    )
+    parser.add_argument(
+        "--learning_rate", type=float, default=0.0002, help="Learning rate."
+    )
+    parser.add_argument(
+        "--weight_decay", type=float, default=5e-4, help="Weight decay."
+    )
+    parser.add_argument(
+        "--alpha_for_decay", type=float, default=0.0, help="Alpha for decay."
+    )
+    parser.add_argument(
+        "--with_tracking",
+        action="store_true",
+        default=False,
+        help="Use tracking to w&b.",
+    )
+    parser.add_argument("--log_every", type=int, default=10, help="Log every n steps.")
 
     args = parser.parse_args()
+    # Get Mamba arguments
     mamba_args = MambaArgs(
         **{arg: getattr(args, arg) for arg in MambaArgs.__dataclass_fields__.keys()}
     )
+    # Get PointMamba arguments
     point_mamba_args = PointMambaArgs(
         mamba_args=mamba_args,
         mamba_depth=args.mamba_depth,
@@ -70,55 +152,51 @@ def parse_args():
         fetch_idx=args.fetch_idx,
         leaky_relu_slope=args.leaky_relu_slope,
     )
+    # Get Training arguments
+    training_args = TrainingConfig(
+        batch_size=args.batch_size,
+        num_epochs=args.epochs,
+        num_points=args.num_points,
+        num_workers=args.num_workers,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        alpha_for_decay=args.alpha_for_decay,
+        with_tracking=args.with_tracking,
+        log_every=args.log_every,
+    )
 
-    return point_mamba_args
+    return point_mamba_args, training_args
 
 
 def main():
 
     # Parse arguments
-    point_mamba_args = parse_args()
-    print(point_mamba_args)
+    point_mamba_args, training_args = parse_args()
+    [print(arg) for arg in point_mamba_args]
 
-    # Other params
-    num_epochs = 300
-    num_cls = 16
-    num_part = 50
-    num_points = 2048
-    learning_rate = 0.0002
-    weight_decay = 5e-4
-
+    # Get number of devices for distributed training
     num_devices = jax.device_count()
     print(f"Number of devices: {num_devices}")
 
-    # Get Dataset and DataLoaders
+    # Get Train Dataset and Dataloader
     trainval_dataset = ShapenetPartDataset(
-        num_points=num_points, split="trainval", normal_channel=False
+        num_points=training_args.num_points, split="trainval", normal_channel=False
     )
-    train_bs = 16
-    # max(
-    #     [
-    #         i
-    #         for i in range(1, num_devices * 16 + 1)
-    #         if len(trainval_dataset) % i == 0 and i % num_devices == 0
-    #     ]
-    # )
+    train_bs = training_args.batch_size
     print(f"Using batch size: {train_bs}, per device: {int(train_bs/num_devices)}")
-
     train_dataloader = JAXDataLoader(
         trainval_dataset,
         batch_size=train_bs,
         shuffle=True,
         drop_last=True,
     )
+
+    # Get Test Dataset and Dataloader
     test_dataset = ShapenetPartDataset(
-        num_points=num_points, split="test", normal_channel=False
+        num_points=training_args.num_points, split="test", normal_channel=False
     )
-
-    # get the largest divisor of the length of the dataset
-    test_bs = 8
+    test_bs = training_args.batch_size / 2
     print(f"Using batch size: {test_bs}, per device: {int(test_bs/num_devices)}")
-
     test_dataloader = JAXDataLoader(
         test_dataset, batch_size=test_bs, shuffle=False, drop_last=True
     )
@@ -126,16 +204,17 @@ def main():
     # Create model, optimizer, scheduler and opt_state
     model, params, batch_stats, optimizer = getModelAndOpt(
         point_mamba_args,
-        num_cls,
-        num_part,
+        16,
+        50,
         False,
         "adamw",
-        learning_rate,
-        weight_decay,
-        decay_steps=num_epochs * len(train_dataloader),
+        training_args.learning_rate,
+        training_args.weight_decay,
+        decay_steps=training_args.num_epochs * len(train_dataloader),
         alpha=0,
     )
 
+    # Initialize the train state
     state = getTrainState(model, params, batch_stats, optimizer)
 
     # Initialize the keys
@@ -148,24 +227,25 @@ def main():
     if num_devices > 1:
         dist = True
         state = jax_utils.replicate(state)
-        trainStep_ = jax.pmap(partial(trainStep, dist=True), axis_name="data")
-        evalStep_ = jax.pmap(partial(evalStep, dist=True), axis_name="data")
+        trainStep_ = jax.pmap(partial(trainStep, dist=True), axis_name="device")
+        evalStep_ = jax.pmap(evalStep, axis_name="device")
         scaler = jax.pmap(
             batched_random_scale_point_cloud,
-            axis_name="data",
+            axis_name="device",
             in_axes=(0, 0, None, None),
         )
         shifter = jax.pmap(
-            batched_shift_point_cloud, axis_name="data", in_axes=(0, 0, None)
+            batched_shift_point_cloud, axis_name="device", in_axes=(0, 0, None)
         )
     else:
         trainStep_ = jax.jit(partial(trainStep, dist=False))
-        evalStep_ = jax.jit(partial(evalStep, dist=False))
+        evalStep_ = jax.jit(evalStep)
         scaler = jit_batched_random_scale_point_cloud
         shifter = jit_batched_shift_point_cloud
 
     # Training loop
-    for epoch in range(num_epochs):
+    for epoch in range(training_args.num_epochs):
+        
         # Training
         train_loss = 0.0
         ovr_preds = []
@@ -177,37 +257,21 @@ def main():
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
             (pts, cls_label, seg) = inputs
 
-            # generate keys
-            fps_keys = random.split(fps_key, train_bs + 1)
-            fps_key, fps_keys = fps_keys[0], fps_keys[1:]
-            droppath_keys = random.split(droppath_key, train_bs + 1)
-            droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
-            dropout_keys = random.split(dropout_key, train_bs + 1)
-            dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
-            shift_keys = random.split(shift_key, train_bs + 1)
-            shift_key, shift_keys = shift_keys[0], shift_keys[1:]
-            scale_keys = random.split(scale_key, train_bs + 1)
-            scale_key, scale_keys = scale_keys[0], scale_keys[1:]
-
-            # Reshape the batch per device
-            if dist:
-                pts = reshape_batch_per_device(pts, num_devices)
-                cls_label = reshape_batch_per_device(cls_label, num_devices)
-                seg = reshape_batch_per_device(seg, num_devices)
-                fps_keys = reshape_batch_per_device(fps_keys, num_devices)
-                droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
-                dropout_keys = reshape_batch_per_device(dropout_keys, num_devices)
-                shift_keys = reshape_batch_per_device(shift_keys, num_devices)
-                scale_keys = reshape_batch_per_device(scale_keys, num_devices)
-
-            # Shift and scale the point cloud
-            pts = shifter(pts, shift_keys, 0.1)
-            pts = scaler(pts, scale_keys, 0.8, 1.25)
-            pts = customTranspose(pts)
-            cls_label = jax.nn.one_hot(cls_label, num_cls)
-
-            # Prepare inputs
-            batch = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
+            # prepare inputs
+            batch = prepInputs(
+                pts,
+                cls_label,
+                seg,
+                fps_key,
+                dropout_key,
+                droppath_key,
+                train_bs,
+                num_devices,
+                shifter,
+                scaler,
+                training=True,
+                dist=dist,
+            )
 
             # Train step
             state, loss, preds = trainStep_(state, batch)
@@ -249,36 +313,24 @@ def main():
         for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
             (pts, cls_label, seg) = inputs
 
-            # generate keys
-            fps_keys = random.split(fps_key, test_bs + 1)
-            fps_key, fps_keys = fps_keys[0], fps_keys[1:]
-            droppath_keys = random.split(droppath_key, test_bs + 1)
-            droppath_key, droppath_keys = droppath_keys[0], droppath_keys[1:]
-            dropout_keys = random.split(dropout_key, test_bs + 1)
-            dropout_key, dropout_keys = dropout_keys[0], dropout_keys[1:]
-            shift_keys = random.split(shift_key, test_bs + 1)
-            shift_key, shift_keys = shift_keys[0], shift_keys[1:]
-            scale_keys = random.split(scale_key, test_bs + 1)
-            scale_key, scale_keys = scale_keys[0], scale_keys[1:]
-
-            # Reshape the batch per device
-            if dist:
-                pts = reshape_batch_per_device(pts, num_devices)
-                cls_label = reshape_batch_per_device(cls_label, num_devices)
-                seg = reshape_batch_per_device(seg, num_devices)
-                fps_keys = reshape_batch_per_device(fps_keys, num_devices)
-                droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
-                dropout_keys = reshape_batch_per_device(dropout_keys, num_devices)
-                shift_keys = reshape_batch_per_device(shift_keys, num_devices)
-                scale_keys = reshape_batch_per_device(scale_keys, num_devices)
-
             # prepare inputs
-            pts = customTranspose(pts)
-            cls_label = jax.nn.one_hot(cls_label, num_cls)
-            inputs = ((pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg)
+            batch = prepInputs(
+                pts,
+                cls_label,
+                seg,
+                fps_key,
+                dropout_key,
+                droppath_key,
+                test_bs,
+                num_devices,
+                shifter,
+                scaler,
+                training=False,
+                dist=dist,
+            )
 
             # Eval step
-            cur_loss, preds = evalStep_(state, inputs)
+            cur_loss, preds = evalStep_(state, batch)
 
             if dist:
                 preds = preds.reshape(num_devices * test_bs, -1)
