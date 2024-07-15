@@ -6,11 +6,16 @@ import jax
 from jax import random
 import jax.numpy as jnp
 
+import os
+import json
 import numpy as np
+import time as time_
 from time import time
 from tqdm import tqdm
+from typing import TextIO
 from flax import jax_utils
 from functools import partial
+import orbax.checkpoint as ocp
 from argparse import ArgumentParser
 
 from models.mamba import MambaArgs
@@ -27,10 +32,12 @@ from utils.train_utils import (
     getModelAndOpt,
     getTrainState,
     prepInputs,
+    setupDirs,
     trainStep,
     evalStep,
     getIOU,
 )
+
 
 def parse_args():
 
@@ -112,6 +119,12 @@ def parse_args():
     )
 
     # Training arguments
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Run name. If None, the launching time will be used.",
+    )
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     parser.add_argument("--epochs", type=int, default=300, help="Number of epochs.")
     parser.add_argument("--num_workers", type=int, default=0, help="Number of workers.")
@@ -154,6 +167,7 @@ def parse_args():
     )
     # Get Training arguments
     training_args = TrainingConfig(
+        run_name=args.run_name,
         batch_size=args.batch_size,
         num_epochs=args.epochs,
         num_points=args.num_points,
@@ -168,17 +182,107 @@ def parse_args():
     return point_mamba_args, training_args
 
 
+def printAndLog(to_print, logger: TextIO):
+    print(to_print)
+    logger.write(to_print + "\n")
+
+
 def main():
 
     # Parse arguments
     point_mamba_args, training_args = parse_args()
-    [print(arg) for arg in point_mamba_args]
+
+    # setup directories
+    log_file, config_file, checkpoint_dir = setupDirs(training_args.run_name)
+
+    # Dump all config related stuff into a file
+    config = {"PointMamba": point_mamba_args, "Training": training_args}
+    with open(config_file, "w") as f:
+        json.dump(config, f, indent=4)
+
+    # Open the log file
+    logger = open(log_file, "w")
+
+    # setup wandb
+    if training_args.with_tracking:
+        import wandb
+
+        wandb.init(project="jax-pointmamba", name=training_args.run_name, config=config)
+
+    # Print stuff and log it
+    args_as_string = "\n".join(
+        [f"{k}: {v}" for k, v in point_mamba_args.__dict__.items()]
+    )  # because f-strings don't allow '\'
+    to_print = f"[*] PointMamba Args: {args_as_string}"
+    printAndLog(to_print, logger)
+    args_as_string = "\n".join([f"{k}: {v}" for k, v in training_args.__dict__.items()])
+    to_print = f"[*] Training Args: {args_as_string}"
+    printAndLog(to_print, logger)
+
+    # Create model, optimizer, scheduler and opt_state
+    to_print = "[*] Creating model, optimizer, scheduler and opt_state..."
+    printAndLog(to_print, logger)
+    model, params, batch_stats, optimizer = getModelAndOpt(
+        point_mamba_args,
+        16,
+        50,
+        False,
+        "adamw",
+        training_args.learning_rate,
+        training_args.weight_decay,
+        decay_steps=training_args.num_epochs
+        * len(ShapenetPartDataset())
+        // training_args.batch_size,
+        alpha=training_args.alpha_for_decay,
+    )
+
+    # Initialize the train state
+    to_print = "[*] Creating train state..."
+    printAndLog(to_print, logger)
+    state = getTrainState(model, params, batch_stats, optimizer)
+
+    # create meta state
+    metaData = {
+        "epoch": 0,
+        "best_instance_avg": 0.0,
+        "best_category_avg": 0.0,
+        "best_accuracy": 0.0,
+    }
+
+    # if a checkpoint exists, load it
+    init_epoch = 0
+    handler = ocp.AsyncCheckpointer(
+        ocp.CompositeCheckpointHandler(
+            "state",
+            "point_mamba_args",
+            "training_args",
+            "metaData",
+        )
+    )
+    if len(os.listdir(checkpoint_dir)) != 0:
+        to_print = "[*] Checkpoint exsits, loading ..."
+        printAndLog(to_print, logger)
+        ckpt_path = os.path.abspath(
+            sorted(os.listdir(checkpoint_dir))[-1]
+        )  # get the last checkpoint
+        restoredState = handler.restore(os.path.join(checkpoint_dir, ckpt_path))
+        # assign the restored variables
+        state = restoredState["state"]
+        point_mamba_args = restoredState["point_mamba_args"]
+        training_args = restoredState["training_args"]
+        init_epoch = restoredState["epoch"]
+        metaData["epoch"] = init_epoch
+        metaData["best_instance_avg"] = restoredState["best_instance_avg"]
+        metaData["best_category_avg"] = restoredState["best_category_avg"]
+        metaData["best_accuracy"] = restoredState["best_accuracy"]
 
     # Get number of devices for distributed training
     num_devices = jax.device_count()
     print(f"Number of devices: {num_devices}")
 
     # Get Train Dataset and Dataloader
+    to_print = "[*] Getting Train Dataset and Dataloader..."
+    printAndLog(to_print, logger)
     trainval_dataset = ShapenetPartDataset(
         num_points=training_args.num_points, split="trainval", normal_channel=False
     )
@@ -192,6 +296,8 @@ def main():
     )
 
     # Get Test Dataset and Dataloader
+    to_print = "[*] Getting Test Dataset and Dataloader..."
+    printAndLog(to_print, logger)
     test_dataset = ShapenetPartDataset(
         num_points=training_args.num_points, split="test", normal_channel=False
     )
@@ -201,23 +307,9 @@ def main():
         test_dataset, batch_size=test_bs, shuffle=False, drop_last=True
     )
 
-    # Create model, optimizer, scheduler and opt_state
-    model, params, batch_stats, optimizer = getModelAndOpt(
-        point_mamba_args,
-        16,
-        50,
-        False,
-        "adamw",
-        training_args.learning_rate,
-        training_args.weight_decay,
-        decay_steps=training_args.num_epochs * len(train_dataloader),
-        alpha=0,
-    )
-
-    # Initialize the train state
-    state = getTrainState(model, params, batch_stats, optimizer)
-
     # Initialize the keys
+    to_print = "[*] Initializing keys..."
+    printAndLog(to_print, logger)
     fps_key, droppath_key, dropout_key, shift_key, scale_key = random.split(
         random.PRNGKey(0), 5
     )
@@ -244,15 +336,16 @@ def main():
         shifter = jit_batched_shift_point_cloud
 
     # Training loop
-    for epoch in range(training_args.num_epochs):
-        
+    to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Starting training from epoch {init_epoch}..."
+    printAndLog(to_print, logger)
+    for epoch in range(init_epoch, training_args.num_epochs):
+
         # Training
         train_loss = 0.0
         ovr_preds = []
         ovr_labels = []
-        print("*" * 89)
-        print("Training...")
-        print("*" * 89)
+        to_print = f"{'*'*89}\n[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Starting epoch {epoch}...\n{'*'*89}"
+        printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
             (pts, cls_label, seg) = inputs
@@ -265,6 +358,8 @@ def main():
                 fps_key,
                 dropout_key,
                 droppath_key,
+                shift_key,
+                scale_key,
                 train_bs,
                 num_devices,
                 shifter,
@@ -289,26 +384,44 @@ def main():
 
         # Logging
         end = time()
-        print(
-            f"Epoch: {epoch}, Loss: {train_loss/len(trainval_dataset):.4f}, Time: {end-start:.2f}s"
-        )
-        if epoch % 10 == 0:
+        if training_args.with_tracking:
+            wandb.log(
+                {
+                    "train_loss": train_loss / len(trainval_dataset),
+                    "train_time": end - start,
+                },
+                step=epoch,
+            )
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Loss: {train_loss/len(trainval_dataset):.4f}, Took {end-start:.2f}s"
+        printAndLog(to_print, logger)
+
+        # Evaluate further metrics every log_every epochs
+        if epoch % training_args.log_every == 0:
             # get IOU scores
             instance_avg, category_avg = getIOU(
                 np.concatenate(ovr_preds), np.concatenate(ovr_labels)
             )
-            print(f"Instance average IoU: {instance_avg:.4f}")
-            print(f"Category average IoU: {category_avg:.4f}")
             # get accuracy
             accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
-            print(f"Accuracy: {accuracy*100:.4f}")
+            # log it
+            to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Instance average IoU: {instance_avg:.4f}, Category average IoU: {category_avg:.4f}, Accuracy: {accuracy*100:.4f}"
+            printAndLog(to_print, logger)
+            if training_args.with_tracking:
+                wandb.log(
+                    {
+                        "train_instance_avg": instance_avg,
+                        "train_category_avg": category_avg,
+                        "train_accuracy": accuracy,
+                    },
+                    step=epoch,
+                )
 
         # Evaluation
+        eval_loss = 0.0
         ovr_preds = []
         ovr_labels = []
-        print("*" * 89)
-        print("Evaluating...")
-        print("*" * 89)
+        to_print = f"{'*'*89}\n[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Starting evaluation for epoch {epoch}...\n{'*'*89}"
+        printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
             (pts, cls_label, seg) = inputs
@@ -321,6 +434,8 @@ def main():
                 fps_key,
                 dropout_key,
                 droppath_key,
+                shift_key,
+                scale_key,
                 test_bs,
                 num_devices,
                 shifter,
@@ -337,20 +452,46 @@ def main():
                 seg = seg.reshape(num_devices * test_bs, -1)
                 cur_loss = jnp.sum(cur_loss)
 
-            loss += cur_loss
+            eval_loss += cur_loss
             ovr_preds.append(np.array(preds))
             ovr_labels.append(np.array(seg))
 
         end = time()
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Loss: {eval_loss/len(test_dataset):.4f}, Took {end-start:.2f}s"
+        printAndLog(to_print, logger)
+
+        # get IOUs
         instance_avg, category_avg = getIOU(
             np.concatenate(ovr_preds), np.concatenate(ovr_labels)
         )
-        print(f"Instance average IoU: {instance_avg:.4f}")
-        print(f"Category average IoU: {category_avg:.4f}")
         # get accuracy
         accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
-        print(f"Accuracy: {accuracy*100:.4f}")
-        print(f"Test Loss: {loss/len(test_dataset):.4f}, Took {end-start:.2f}s")
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Instance average IoU: {instance_avg:.4f}, Category average IoU: {category_avg:.4f}, Accuracy: {accuracy*100:.4f}"
+        printAndLog(to_print, logger)
+
+        # update metaData
+        metaData["epoch"] = epoch + 1
+
+        # compare with best metrics
+        if category_avg > metaData["best_category_avg"]:
+            metaData["best_category_avg"] = metaData["best_category_avg"]
+        if accuracy > metaData["best_accuracy"]:
+            metaData["best_accuracy"] = metaData["best_accuracy"]
+        if instance_avg > metaData["best_instance_avg"]:
+            # save the model
+            metaData["best_instance_avg"] = metaData["best_instance_avg"]
+            best_path = ocp.test_utils.erase_and_create_empty(
+                checkpoint_dir / "best_model"
+            )
+            handler.save(
+                best_path,
+                args=ocp.args.Composite(
+                    state=ocp.args.PyTreeSave(state),
+                    point_mamba_args=ocp.args.JsonSave(point_mamba_args),
+                    training_args=ocp.args.JsonSave(training_args),
+                    epoch=ocp.args.JsonSave(metaData),
+                ),
+            )
 
 
 if __name__ == "__main__":

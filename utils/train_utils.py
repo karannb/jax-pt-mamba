@@ -1,13 +1,17 @@
+import os
+from os.path import join
 import jax
+import time
 import optax
 import numpy as np
 from jax import random
 from jax._src import prng
 from jax import numpy as jnp
+import orbax.checkpoint as ocp
 from flax.training import train_state
-from typing import Any, Dict, Tuple, List, Callable
 from utils.func_utils import customTranspose
 from utils.dist_utils import reshape_batch_per_device
+from typing import Any, Dict, Tuple, List, Callable, Optional
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
 
 # type definitions
@@ -44,6 +48,7 @@ str2opt = {
 
 
 class TrainingConfig:
+    run_name: Optional[str] = None
     batch_size: int = 16
     num_epochs: int = 300
     num_points: int = 2048
@@ -113,6 +118,8 @@ def prepInputs(
     fps_key,
     dropout_key,
     droppath_key,
+    shift_key,
+    scale_key,
     bs,
     num_devices,
     shifter: Callable,
@@ -273,3 +280,23 @@ def getIOU(preds: np.ndarray, targets: np.ndarray) -> Tuple[np.ndarray, List[flo
         )
 
     return instance_avg_iou, category_avg_iou
+
+
+def setupDirs(log_dir: str, run_name: Optional[str] = None):
+    
+    if run_name is None:
+        run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
+        
+    # make the run directory
+    os.mkdir(join(log_dir, run_name))
+    # log file path
+    log_file = join(log_dir, run_name, "ovr.log")
+    # config file path
+    config_file = join(log_dir, run_name, "config.json")
+    # checkpoint directory
+    checkpoint_dir = os.path.abspath(join(log_dir, run_name, "checkpoints"))
+    # because this is always used for orbax stuff, return a orbax path
+    checkpoint_dir = ocp.test_utils.erase_and_create_empty(checkpoint_dir)
+    
+    return log_file, config_file, checkpoint_dir
+    

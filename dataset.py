@@ -46,6 +46,8 @@ class ShapenetPartDataset(Dataset):
         self._load_metadata()
         self._prepare_data_paths()
         self._map_classes()
+        
+        print(f"Found {len(self)} items in the dataset")
 
     def _load_categories(self):
         try:
