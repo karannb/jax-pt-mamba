@@ -204,6 +204,7 @@ def printAndLog(to_print, logger: TextIO):
     if log2console:
         print(to_print)
     logger.write(to_print + "\n")
+    logger.flush()
 
 
 def main():
@@ -405,17 +406,17 @@ def main():
             )
 
             # Train step
-            state, loss, preds = trainStep_(state, batch)
+            state, loss, logits = trainStep_(state, batch)
 
             # get the overall loss and predictions
             if dist:
-                preds = preds.reshape(num_devices * train_bs, -1)
-                seg = seg.reshape(num_devices * train_bs, -1)
+                logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
+                seg = seg.reshape(-1, seg.shape[-1])
                 loss = jnp.sum(loss)
 
             # Log stuff
             train_loss += loss
-            ovr_preds.append(np.array(preds))
+            ovr_preds.append(np.array(logits))
             ovr_labels.append(np.array(seg))
 
         # Logging
@@ -489,15 +490,15 @@ def main():
             )
 
             # Eval step
-            cur_loss, preds = evalStep_(state, batch)
+            cur_loss, logits = evalStep_(state, batch)
 
             if dist:
-                preds = preds.reshape(num_devices * test_bs, -1)
-                seg = seg.reshape(num_devices * test_bs, -1)
-                cur_loss = jnp.sum(cur_loss)
+                logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
+                seg = seg.reshape(-1, seg.shape[-1])
+                cur_loss = jnp.sum(loss)
 
             eval_loss += cur_loss
-            ovr_preds.append(np.array(preds))
+            ovr_preds.append(np.array(logits))
             ovr_labels.append(np.array(seg))
 
         end = time()
@@ -547,16 +548,19 @@ def main():
             )
             point_mamba2save = copy(point_mamba_args).__dict__
             point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
+            if dist:
+                new_state = jax_utils.unreplicate(state)
             handler.save(
                 best_path,
                 args=ocp.args.Composite(
-                    state=ocp.args.PyTreeSave(state),
+                    state=ocp.args.PyTreeSave(new_state),
                     point_mamba_args=ocp.args.JsonSave(point_mamba2save),
                     training_args=ocp.args.JsonSave(training_args.__dict__),
                     metaData=ocp.args.JsonSave(metaData),
                 ),
                 force=True,
             )
+            del new_state
             
         if epoch % 50 == 0:
             # save the model
@@ -565,16 +569,19 @@ def main():
             ckpt_path = ocp.test_utils.erase_and_create_empty(checkpoint_dir / f"ckpt_{epoch}")
             point_mamba2save = copy(point_mamba_args).__dict__
             point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
+            if dist:
+                new_state = jax_utils.unreplicate(state)
             handler.save(
                 ckpt_path,
                 args=ocp.args.Composite(
-                    state=ocp.args.PyTreeSave(state),
+                    state=ocp.args.PyTreeSave(new_state),
                     point_mamba_args=ocp.args.JsonSave(point_mamba2save),
                     training_args=ocp.args.JsonSave(training_args.__dict__),
                     metaData=ocp.args.JsonSave(metaData),
                 ),
                 force=True,
             )
+            del new_state
 
 
 if __name__ == "__main__":

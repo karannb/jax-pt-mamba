@@ -1,7 +1,7 @@
 import os
 from os.path import join
 import jax
-import time
+import uuid
 import optax
 import numpy as np
 from jax import random
@@ -217,10 +217,7 @@ def trainStep(
     # Update the batch statistics
     state = state.replace(batch_stats=updates["batch_stats"])
 
-    # get preds
-    preds = jnp.argmax(logits, axis=-1)
-
-    return state, loss, preds
+    return state, loss, logits
 
 
 def evalStep(
@@ -251,10 +248,7 @@ def evalStep(
         optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=seg)
     )
 
-    # get preds
-    preds = jnp.argmax(logits, axis=-1)
-
-    return loss, preds
+    return loss, logits
 
 
 def getIOU(
@@ -274,8 +268,8 @@ def getIOU(
         cat_inds = category_to_labels[
             category
         ]  # i.e. get all part labels for this category
-        logit = logit[cat_inds]  # keep only the parts for this category
-        pred = np.argmax(logit, axis=0) + cat_inds[0]  # get the part label
+        logit = logit[:, cat_inds]  # keep only the parts for this category
+        pred = np.argmax(logit, axis=-1) + cat_inds[0]  # get the part label
 
         # compute accuracy of this pred, target pair
         total_seen += len(target)
@@ -319,7 +313,7 @@ def getIOU(
 def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
 
     if run_name == None:
-        run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
+        run_name = uuid.uuid4().hex[:6] # generate a random run name
         print(f"Run name not provided. Using {run_name} as run name")
 
     # make the run directory
