@@ -136,7 +136,7 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self.dt_proj = nn.Dense(self.args.dt_rank, use_bias=False)
+            self._dt_proj_ = nn.Dense(self.args.dt_rank, use_bias=False)
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
@@ -236,14 +236,15 @@ class MambaBlock(nn.Module):
                 indices_or_sections=[n],
                 axis=-1,
             )  # B, C: (l, n)
-            delta = self.dt_proj(integration_timesteps)  # (l, dt_rank)
+            delta = self._dt_proj_(integration_timesteps)  # (l, dt_rank)
         else:
             (delta, B, C) = jnp.split(
                 x_dbl,
                 indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
                 axis=-1,
             )  # delta: (l, dt_rank). B, C: (l, n)
-            delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
+            
+        delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
             x, delta, A, B, C, D

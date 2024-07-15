@@ -290,13 +290,24 @@ def main():
         restoredState = handler.restore(os.path.join(checkpoint_dir, ckpt_path))
         # assign the restored variables
         state = restoredState["state"]
-        point_mamba_args = restoredState["point_mamba_args"]
-        training_args = restoredState["training_args"]
-        init_epoch = restoredState["epoch"]
+        mamba_args = MambaArgs(**restoredState["point_mamba_args"]["mamba_args"])
+        point_mamba_args = PointMambaArgs(
+            mamba_args=mamba_args,
+            mamba_depth=restoredState["point_mamba_args"]["mamba_depth"],
+            drop_out=restoredState["point_mamba_args"]["drop_out"],
+            drop_path=restoredState["point_mamba_args"]["drop_path"],
+            num_group=restoredState["point_mamba_args"]["num_group"],
+            group_size=restoredState["point_mamba_args"]["group_size"],
+            encoder_channels=restoredState["point_mamba_args"]["encoder_channels"],
+            fetch_idx=restoredState["point_mamba_args"]["fetch_idx"],
+            leaky_relu_slope=restoredState["point_mamba_args"]["leaky_relu_slope"],
+        )
+        training_args = TrainingConfig(**restoredState["training_args"])
+        init_epoch = restoredState["metaData"]["epoch"]
         metaData["epoch"] = init_epoch
-        metaData["best_instance_avg"] = restoredState["best_instance_avg"]
-        metaData["best_class_avg"] = restoredState["best_class_avg"]
-        metaData["best_accuracy"] = restoredState["best_accuracy"]
+        metaData["best_instance_avg"] = restoredState["metaData"]["best_instance_avg"]
+        metaData["best_class_avg"] = restoredState["metaData"]["best_class_avg"]
+        metaData["best_accuracy"] = restoredState["metaData"]["best_accuracy"]
 
     # Get number of devices for distributed training
     num_devices = jax.device_count()
@@ -373,13 +384,12 @@ def main():
         printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
-            (pts, cls_label, integration_timesteps, seg) = inputs
-
+            (pts, cls_label, seg) = inputs
+            
             # prepare inputs
             batch = prepInputs(
                 pts,
                 cls_label,
-                integration_timesteps,
                 seg,
                 fps_key,
                 dropout_key,
@@ -458,13 +468,12 @@ def main():
         printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
-            (pts, cls_label, integration_timesteps, seg) = inputs
+            (pts, cls_label, seg) = inputs
 
             # prepare inputs
             batch = prepInputs(
                 pts,
                 cls_label,
-                integration_timesteps,
                 seg,
                 fps_key,
                 dropout_key,

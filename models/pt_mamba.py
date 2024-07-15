@@ -8,6 +8,7 @@ from jax.lax import expand_dims
 from flax import linen as nn
 
 # other imports
+import numpy as np
 from functools import partial
 from dataclasses import dataclass
 from utils.dropout import Dropout
@@ -401,7 +402,6 @@ class PointMamba(nn.Module):
         fps_key: KeyArray,
         droppath_key: KeyArray,
         dropout_key: KeyArray,
-        integration_timesteps: Optional[Array] = None,
         training: bool = False,
     ):
         """
@@ -460,7 +460,12 @@ class PointMamba(nn.Module):
         )  # (G*3, encoder_channels)
         pos = sortSelectAndConcat(pos, inds)
         center = sortSelectAndConcat(center, inds)
-
+        
+        # calculate integration timesteps from the centers
+        ovr_inds = jnp.concatenate(inds, axis=0)
+        timesteps = center[:, 0][ovr_inds] # get center_x and sort with inds
+        integration_timesteps = jnp.diff(timesteps, axis=0, append=timesteps[-1:])
+        
         # Run the Mamba model
         features_list = self.blocks(
             x=group_input_tokens,
@@ -526,7 +531,7 @@ class PointMamba(nn.Module):
 # vmap the class
 BatchedPointMamba = nn.vmap(
     PointMamba,
-    in_axes=(0, 0, 0, 0, 0, 0, None),
+    in_axes=(0, 0, 0, 0, 0, None),
     out_axes=0,
     variable_axes={"params": None, "batch_stats": None},
     split_rngs={"params": False},
@@ -553,11 +558,11 @@ def getModel(
         input_key, (2, 1), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
-    dummy_integration_timesteps = None
-    if config.mamba_args.event_based:
-        dummy_integration_timesteps = random.uniform(
-            input_key, (2, 1), minval=0.0, maxval=1.0
-        )
+    # dummy_integration_timesteps = None
+    # if config.mamba_args.event_based:
+    #     dummy_integration_timesteps = random.uniform(
+    #         input_key, (2, 1), minval=0.0, maxval=1.0
+    #     )
     variables = model.init(
         model_key,
         dummy_x,
@@ -565,7 +570,6 @@ def getModel(
         fps_keys,
         droppath_keys,
         dropout_keys,
-        dummy_integration_timesteps,
         False,
     )
 

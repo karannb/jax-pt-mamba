@@ -116,7 +116,6 @@ def getTrainState(
 def prepInputs(
     pts,
     cls_label,
-    integration_timesteps,
     seg,
     fps_key,
     dropout_key,
@@ -147,9 +146,6 @@ def prepInputs(
     if dist:
         pts = reshape_batch_per_device(pts, num_devices)
         cls_label = reshape_batch_per_device(cls_label, num_devices)
-        integration_timesteps = reshape_batch_per_device(
-            integration_timesteps, num_devices
-        )
         seg = reshape_batch_per_device(seg, num_devices)
         fps_keys = reshape_batch_per_device(fps_keys, num_devices)
         droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
@@ -170,7 +166,6 @@ def prepInputs(
         fps_keys,
         droppath_keys,
         dropout_keys,
-        integration_timesteps,
     ), seg
 
 
@@ -185,7 +180,6 @@ def trainStep(
         (
             pts,
             cls_label,
-            integration_timesteps,
             fps_keys,
             droppath_keys,
             dropout_keys,
@@ -194,7 +188,6 @@ def trainStep(
             {"params": params, "batch_stats": state.batch_stats},
             pts,
             cls_label,
-            integration_timesteps,
             fps_keys,
             droppath_keys,
             dropout_keys,
@@ -238,7 +231,6 @@ def evalStep(
     (
         pts,
         cls_label,
-        integration_timesteps,
         fps_keys,
         droppath_keys,
         dropout_keys,
@@ -248,7 +240,6 @@ def evalStep(
         {"params": state.params, "batch_stats": state.batch_stats},
         pts,
         cls_label,
-        integration_timesteps,
         fps_keys,
         droppath_keys,
         dropout_keys,

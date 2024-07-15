@@ -189,10 +189,10 @@ def numpy_collate_fn(batch):
     tokens = np.array(points)
     targets = np.array(segmentation_labels)
 
-    timesteps = tokens[:, :, 0]
-    timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
+    # timesteps = tokens[:, :, 0]
+    # timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
     
-    return tokens, object_labels, timesteps, targets  #, lengths
+    return tokens, object_labels, targets  #, lengths
 
 
 class JAXDataLoader(DataLoader):
@@ -227,23 +227,20 @@ class JAXDataLoader(DataLoader):
 # Main function
 def main():
     # train_loader, _, _ = dataloader_generator(seed=0)
-    train_data = ShapenetPartDataset(
-        (
-            "/p/project1/eelsaisdc/bania1/data/"
-            "shapenetcore_partanno_segmentation_benchmark_v0_normal"
-        )
-    )
+    train_data = ShapenetPartDataset()
     train_loader = JAXDataLoader(train_data, batch_size=4, shuffle=True)
 
     n = len(train_loader)
     iterator = iter(train_loader)
-    end = None
-    for i in range(n):
-        start = time()
-        batch = next(iterator)
-        if end != None:
-            print(f"Time taken for batch {i+1}: {start - end:.4f} seconds")
-        end = time()
+    item = next(iterator)
+    print(item[2].shape)
+    # end = None
+    # for i in range(n):
+    #     start = time()
+    #     batch = next(iterator)
+    #     if end != None:
+    #         print(f"Time taken for batch {i+1}: {start - end:.4f} seconds")
+    #     end = time()
 
 
 if __name__ == "__main__":
