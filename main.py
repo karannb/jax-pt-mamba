@@ -10,6 +10,7 @@ import os
 import json
 import numpy as np
 import time as time_
+from copy import copy
 from time import time
 from tqdm import tqdm
 from typing import TextIO
@@ -38,8 +39,12 @@ from utils.train_utils import (
     getIOU,
 )
 
+# Constants
+log2console = False
+
 
 def parse_args():
+    global log2console
 
     parser = ArgumentParser()
 
@@ -51,7 +56,10 @@ def parse_args():
         "--mamba_depth", type=int, default=12, help="Number of Mamba layers to use."
     )
     parser.add_argument(
-        "--event_based", default=False, action="store_true", help="Use event based Mamba."
+        "--event_based",
+        default=False,
+        action="store_true",
+        help="Use event based Mamba.",
     )
     parser.add_argument(
         "--norm_eps", type=float, default=1e-5, help="Epsilon for normalization."
@@ -87,7 +95,7 @@ def parse_args():
     parser.add_argument("--drop_out", type=float, default=0.0, help="Dropout rate.")
     parser.add_argument("--drop_path", type=float, default=0.2, help="Drop path rate.")
     # the original paper also has a drop_path_rate parameter, which is used to initialize
-    # a DropPath block but it is never used!
+    # a DropPath block but it is never used.
 
     # PointMamba arguments
     parser.add_argument(
@@ -124,7 +132,6 @@ def parse_args():
     # Training arguments
     parser.add_argument(
         "--run_name",
-        type=str,
         default=None,
         help="Run name. If None, the launching time will be used.",
     )
@@ -150,11 +157,14 @@ def parse_args():
         help="Use tracking to w&b.",
     )
     parser.add_argument("--eval_every", type=int, default=10, help="Log every n steps.")
-
+    
+    # One logging arg
+    parser.add_argument("--log_to_console", action="store_true", default=False, help="Log to console.")
+    
     args = parser.parse_args()
     # Get Mamba arguments
     mamba_args = MambaArgs(
-        **{arg: getattr(args, arg) for arg in MambaArgs.__dataclass_fields__.keys()}
+        **{arg: getattr(args, arg, None) for arg in MambaArgs.__dataclass_fields__.keys()}
     )
     mamba_args.conv_bias = not args.no_conv_bias
     # Get PointMamba arguments
@@ -182,12 +192,17 @@ def parse_args():
         with_tracking=args.with_tracking,
         eval_every=args.eval_every,
     )
-
+    
+    # Set the logging to console
+    log2console = args.log_to_console
+    
     return point_mamba_args, training_args
 
 
 def printAndLog(to_print, logger: TextIO):
-    print(to_print)
+    global log2console
+    if log2console:
+        print(to_print)
     logger.write(to_print + "\n")
 
 
@@ -197,10 +212,12 @@ def main():
     point_mamba_args, training_args = parse_args()
 
     # setup directories
-    log_file, config_file, checkpoint_dir = setupDirs(training_args.run_name)
+    log_file, config_file, checkpoint_dir = setupDirs(run_name=training_args.run_name)
 
     # Dump all config related stuff into a file
-    config = {"PointMamba": point_mamba_args, "Training": training_args}
+    point_mamba2save = copy(point_mamba_args).__dict__
+    point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
+    config = {"PointMamba": point_mamba2save, "Training": training_args.__dict__}
     with open(config_file, "w") as f:
         json.dump(config, f, indent=4)
 
@@ -222,7 +239,7 @@ def main():
     args_as_string = "\n".join([f"{k}: {v}" for k, v in training_args.__dict__.items()])
     to_print = f"[*] Training Args: {args_as_string}"
     printAndLog(to_print, logger)
-
+    
     # Create model, optimizer, scheduler and opt_state
     to_print = "[*] Creating model, optimizer, scheduler and opt_state..."
     printAndLog(to_print, logger)
@@ -244,7 +261,7 @@ def main():
     to_print = "[*] Creating train state..."
     printAndLog(to_print, logger)
     state = getTrainState(model, params, batch_stats, optimizer)
-
+    
     # create meta state
     metaData = {
         "epoch": 0,
@@ -283,7 +300,8 @@ def main():
 
     # Get number of devices for distributed training
     num_devices = jax.device_count()
-    print(f"Number of devices: {num_devices}")
+    to_print = f"[*] Number of devices: {num_devices}"
+    printAndLog(to_print, logger)
 
     # Get Train Dataset and Dataloader
     to_print = "[*] Getting Train Dataset and Dataloader..."
@@ -292,7 +310,8 @@ def main():
         num_points=training_args.num_points, split="trainval", normal_channel=False
     )
     train_bs = training_args.batch_size
-    print(f"Using batch size: {train_bs}, per device: {int(train_bs/num_devices)}")
+    to_print = f"Using batch size: {train_bs}, per device: {int(train_bs/num_devices)}"
+    printAndLog(to_print, logger)
     train_dataloader = JAXDataLoader(
         trainval_dataset,
         batch_size=train_bs,
@@ -306,8 +325,9 @@ def main():
     test_dataset = ShapenetPartDataset(
         num_points=training_args.num_points, split="test", normal_channel=False
     )
-    test_bs = training_args.batch_size / 2
-    print(f"Using batch size: {test_bs}, per device: {int(test_bs/num_devices)}")
+    test_bs = training_args.batch_size // 2
+    to_print = f"Using batch size: {test_bs}, per device: {int(test_bs/num_devices)}"
+    printAndLog(to_print, logger)
     test_dataloader = JAXDataLoader(
         test_dataset, batch_size=test_bs, shuffle=False, drop_last=True
     )
@@ -415,7 +435,7 @@ def main():
             to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Instance Avg: {instance_avg_iou:.4f}, Train Class Avg: {class_avg_iou:.4f}, Train Accuracy: {accuracy:.4f}, Train Class Avg Accuracy: {class_avg_accuracy:.4f}"
             printAndLog(to_print, logger)
             shape_wise = "\n".join(
-                f"{i}: {shape_ious[i]:.4f}" for i in range(len(shape_ious))
+                f"{key}: {shape_ious[key]:.4f}" for _, key in enumerate(shape_ious)
             )
             to_print = f"[*] Shape-wise IoU:\n{shape_wise}"
             printAndLog(to_print, logger)
@@ -481,7 +501,7 @@ def main():
         to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Instance Avg: {instance_avg_iou:.4f}, Eval Class Avg: {class_avg_iou:.4f}, Eval Accuracy: {accuracy:.4f}, Eval Class Avg Accuracy: {class_avg_accuracy:.4f}"
         printAndLog(to_print, logger)
         shape_wise = "\n".join(
-            f"{i}: {shape_ious[i]:.4f}" for i in range(len(shape_ious))
+            f"{key}: {shape_ious[key]:.4f}" for _, key in enumerate(shape_ious)
         )
         to_print = f"[*] Shape-wise IoU:\n{shape_wise}"
         printAndLog(to_print, logger)
@@ -516,14 +536,35 @@ def main():
             best_path = ocp.test_utils.erase_and_create_empty(
                 checkpoint_dir / "best_model"
             )
+            point_mamba2save = copy(point_mamba_args).__dict__
+            point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
             handler.save(
                 best_path,
                 args=ocp.args.Composite(
                     state=ocp.args.PyTreeSave(state),
-                    point_mamba_args=ocp.args.JsonSave(point_mamba_args),
-                    training_args=ocp.args.JsonSave(training_args),
-                    epoch=ocp.args.JsonSave(metaData),
+                    point_mamba_args=ocp.args.JsonSave(point_mamba2save),
+                    training_args=ocp.args.JsonSave(training_args.__dict__),
+                    metaData=ocp.args.JsonSave(metaData),
                 ),
+                force=True,
+            )
+            
+        if epoch % 50 == 0:
+            # save the model
+            to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Saving checkpoint..."
+            printAndLog(to_print, logger)
+            ckpt_path = ocp.test_utils.erase_and_create_empty(checkpoint_dir / f"ckpt_{epoch}")
+            point_mamba2save = copy(point_mamba_args).__dict__
+            point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
+            handler.save(
+                ckpt_path,
+                args=ocp.args.Composite(
+                    state=ocp.args.PyTreeSave(state),
+                    point_mamba_args=ocp.args.JsonSave(point_mamba2save),
+                    training_args=ocp.args.JsonSave(training_args.__dict__),
+                    metaData=ocp.args.JsonSave(metaData),
+                ),
+                force=True,
             )
 
 

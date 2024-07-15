@@ -243,7 +243,7 @@ class MambaBlock(nn.Module):
                 indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
                 axis=-1,
             )  # delta: (l, dt_rank). B, C: (l, n)
-        delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
+            delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
             x, delta, A, B, C, D

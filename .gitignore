@@ -2,5 +2,6 @@
 logs/
 data/
 ckpts/
+wandb/
 __pycache__/
 tester.py

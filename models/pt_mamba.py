@@ -562,10 +562,10 @@ def getModel(
         model_key,
         dummy_x,
         dummy_cls,
-        dummy_integration_timesteps,
         fps_keys,
         droppath_keys,
         dropout_keys,
+        dummy_integration_timesteps,
         False,
     )
 

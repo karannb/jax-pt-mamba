@@ -8,10 +8,11 @@ from jax import random
 from jax._src import prng
 from jax import numpy as jnp
 import orbax.checkpoint as ocp
+from dataclasses import dataclass
 from flax.training import train_state
 from utils.func_utils import customTranspose
 from utils.dist_utils import reshape_batch_per_device
-from typing import Any, Dict, Tuple, List, Callable, Optional
+from typing import Any, Dict, Tuple, Callable, Optional
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
 
 # type definitions
@@ -47,6 +48,7 @@ str2opt = {
 }
 
 
+@dataclass
 class TrainingConfig:
     run_name: Optional[str] = None
     batch_size: int = 16
@@ -145,7 +147,9 @@ def prepInputs(
     if dist:
         pts = reshape_batch_per_device(pts, num_devices)
         cls_label = reshape_batch_per_device(cls_label, num_devices)
-        integration_timesteps = reshape_batch_per_device(integration_timesteps, num_devices)
+        integration_timesteps = reshape_batch_per_device(
+            integration_timesteps, num_devices
+        )
         seg = reshape_batch_per_device(seg, num_devices)
         fps_keys = reshape_batch_per_device(fps_keys, num_devices)
         droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
@@ -160,7 +164,14 @@ def prepInputs(
     pts = customTranspose(pts)
     cls_label = jax.nn.one_hot(cls_label, 16)
 
-    return (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), seg
+    return (
+        pts,
+        cls_label,
+        fps_keys,
+        droppath_keys,
+        dropout_keys,
+        integration_timesteps,
+    ), seg
 
 
 def trainStep(
@@ -171,7 +182,14 @@ def trainStep(
 
     # Define the loss function
     def loss_fn(params):
-        (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), targets = batch
+        (
+            pts,
+            cls_label,
+            integration_timesteps,
+            fps_keys,
+            droppath_keys,
+            dropout_keys,
+        ), targets = batch
         logits, updates = state.apply_fn(
             {"params": params, "batch_stats": state.batch_stats},
             pts,
@@ -217,7 +235,14 @@ def evalStep(
     batch: Tuple[jnp.ndarray, jnp.ndarray],
 ) -> jnp.ndarray:
 
-    (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), seg = batch
+    (
+        pts,
+        cls_label,
+        integration_timesteps,
+        fps_keys,
+        droppath_keys,
+        dropout_keys,
+    ), seg = batch
 
     logits = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
@@ -258,8 +283,8 @@ def getIOU(
         cat_inds = category_to_labels[
             category
         ]  # i.e. get all part labels for this category
-        logit = logit[:, cat_inds]  # keep only the parts for this category
-        pred = np.argmax(logit, axis=1) + cat_inds[0]  # get the part label
+        logit = logit[cat_inds]  # keep only the parts for this category
+        pred = np.argmax(logit, axis=0) + cat_inds[0]  # get the part label
 
         # compute accuracy of this pred, target pair
         total_seen += len(target)
@@ -294,7 +319,7 @@ def getIOU(
             shape_ious[cat]
         )  # average over all shapes in this category
 
-    class_avg_iou = np.mean(shape_ious.values())
+    class_avg_iou = np.mean(list(shape_ious.values()))
     instance_avg_iou = np.mean(all_shape_ious)
 
     return accuracy, class_avg_accuracy, class_avg_iou, instance_avg_iou, shape_ious
@@ -302,8 +327,9 @@ def getIOU(
 
 def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
 
-    if run_name is None:
+    if run_name == None:
         run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
+        print(f"Run name not provided. Using {run_name} as run name")
 
     # make the run directory
     os.mkdir(join(log_dir, run_name))
