@@ -185,14 +185,14 @@ def numpy_collate_fn(batch):
     points, object_labels, segmentation_labels = zip(*batch)
 
     object_labels = np.array(object_labels)
-
+    
     tokens = np.array(points)
     targets = np.array(segmentation_labels)
 
-    # timesteps = tokens[:, :, 0]
-    # timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
-    # lengths = np.array([len(seq) for seq in tokens])[..., None]
-    return tokens, object_labels, targets  # , timesteps, lengths
+    timesteps = tokens[:, :, 0]
+    timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
+    
+    return tokens, object_labels, timesteps, targets  #, lengths
 
 
 class JAXDataLoader(DataLoader):

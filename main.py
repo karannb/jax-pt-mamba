@@ -48,6 +48,12 @@ def parse_args():
         "--d_model", type=int, default=64, help="Mamba's internal dimension."
     )
     parser.add_argument(
+        "--mamba_depth", type=int, default=12, help="Number of Mamba layers to use."
+    )
+    parser.add_argument(
+        "--event_based", default=False, action="store_true", help="Use event based Mamba."
+    )
+    parser.add_argument(
         "--norm_eps", type=float, default=1e-5, help="Epsilon for normalization."
     )
     parser.add_argument(
@@ -77,9 +83,6 @@ def parse_args():
         action="store_true",
         default=False,
         help="Use bias or not in projection layers.",
-    )
-    parser.add_argument(
-        "--mamba_depth", type=int, default=12, help="Number of Mamba layers to use."
     )
     parser.add_argument("--drop_out", type=float, default=0.0, help="Dropout rate.")
     parser.add_argument("--drop_path", type=float, default=0.2, help="Drop path rate.")
@@ -153,6 +156,7 @@ def parse_args():
     mamba_args = MambaArgs(
         **{arg: getattr(args, arg) for arg in MambaArgs.__dataclass_fields__.keys()}
     )
+    mamba_args.conv_bias = not args.no_conv_bias
     # Get PointMamba arguments
     point_mamba_args = PointMambaArgs(
         mamba_args=mamba_args,
@@ -349,12 +353,13 @@ def main():
         printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
-            (pts, cls_label, seg) = inputs
+            (pts, cls_label, integration_timesteps, seg) = inputs
 
             # prepare inputs
             batch = prepInputs(
                 pts,
                 cls_label,
+                integration_timesteps,
                 seg,
                 fps_key,
                 dropout_key,
@@ -433,12 +438,13 @@ def main():
         printAndLog(to_print, logger)
         start = time()
         for inputs in tqdm(test_dataloader, total=len(test_dataloader)):
-            (pts, cls_label, seg) = inputs
+            (pts, cls_label, integration_timesteps, seg) = inputs
 
             # prepare inputs
             batch = prepInputs(
                 pts,
                 cls_label,
+                integration_timesteps,
                 seg,
                 fps_key,
                 dropout_key,

@@ -25,7 +25,7 @@ from utils.func_utils import (
 # Type definitions
 from jax._src import prng
 from jax._src.basearray import Array
-from typing import Union, Tuple, Dict, Any, List
+from typing import Union, Tuple, Dict, Any, List, Optional
 
 KeyArray = prng.PRNGKeyArray  # Union[Array, ]
 
@@ -46,6 +46,7 @@ class PointMambaArgs:
 
 def create_block(
     d_model: int,
+    event_based: bool = False,
     norm_eps: float = 1e-5,
     rms_norm: bool = False,
     d_state: int = 16,
@@ -101,6 +102,7 @@ def create_block(
 
     model_args = MambaArgs(
         d_model=d_model,
+        event_based=event_based,
         rms_norm=rms_norm,
         norm_eps=norm_eps,
         d_state=d_state,
@@ -233,6 +235,7 @@ class Encoder(nn.Module):
 class MixerModelForSegmentation(nn.Module):
     d_model: int
     n_layer: int
+    event_based: bool = False
     norm_eps: float = 1e-5
     rms_norm: bool = False
     d_state: int = 16
@@ -252,6 +255,7 @@ class MixerModelForSegmentation(nn.Module):
         self.layers = [
             create_block(
                 d_model=self.d_model,
+                event_based=self.event_based,
                 norm_eps=self.norm_eps,
                 rms_norm=self.rms_norm,
                 d_state=self.d_state,
@@ -272,7 +276,12 @@ class MixerModelForSegmentation(nn.Module):
         )
 
     def __call__(
-        self, x: Array, pos: Array, droppath_key: KeyArray, training: bool = False
+        self,
+        x: Array,
+        pos: Array,
+        droppath_key: KeyArray,
+        integration_timesteps: Optional[Array] = None,
+        training: bool = False,
     ) -> List[Array]:
         """
         Returns the features from the layers specified in fetch_idx.
@@ -308,6 +317,7 @@ class MixerModelForSegmentation(nn.Module):
             hidden_states = layer(
                 hidden_states,
                 used_keys,
+                integration_timesteps,
                 training=training,
             )
             if (i + 1) in self.fetch_idx:
@@ -349,6 +359,7 @@ class PointMamba(nn.Module):
         self.blocks = MixerModelForSegmentation(
             d_model=self.config.mamba_args.d_model,
             n_layer=self.config.mamba_depth,
+            event_based=self.config.mamba_args.event_based,
             rms_norm=self.config.mamba_args.rms_norm,
             fetch_idx=self.config.fetch_idx,
             drop_path=self.config.drop_path,
@@ -390,6 +401,7 @@ class PointMamba(nn.Module):
         fps_key: KeyArray,
         droppath_key: KeyArray,
         dropout_key: KeyArray,
+        integration_timesteps: Optional[Array] = None,
         training: bool = False,
     ):
         """
@@ -454,6 +466,7 @@ class PointMamba(nn.Module):
             x=group_input_tokens,
             pos=pos,
             droppath_key=droppath_key,
+            integration_timesteps=integration_timesteps,
             training=training,
         )
         # (G*3, d_model) * len(fetch_idx)
@@ -513,7 +526,7 @@ class PointMamba(nn.Module):
 # vmap the class
 BatchedPointMamba = nn.vmap(
     PointMamba,
-    in_axes=(0, 0, 0, 0, 0, None),
+    in_axes=(0, 0, 0, 0, 0, 0, None),
     out_axes=0,
     variable_axes={"params": None, "batch_stats": None},
     split_rngs={"params": False},
@@ -540,10 +553,16 @@ def getModel(
         input_key, (2, 1), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
+    dummy_integration_timesteps = None
+    if config.mamba_args.event_based:
+        dummy_integration_timesteps = random.uniform(
+            input_key, (2, 1), minval=0.0, maxval=1.0
+        )
     variables = model.init(
         model_key,
         dummy_x,
         dummy_cls,
+        dummy_integration_timesteps,
         fps_keys,
         droppath_keys,
         dropout_keys,

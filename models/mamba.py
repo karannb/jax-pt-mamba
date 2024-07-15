@@ -8,7 +8,7 @@ Suggest reading the following before/while reading the code:
         https://srush.github.io/annotated-s4
 
 Glossary:
-    b: batch size                       (`B` in Mamba paper [1] Algorithm 2)
+    b: batch size                       (`B` in Mamba paper [1] Algorithm 2) # no batch-size, because in Jax.
     l: sequence length                  (`L` in [1] Algorithm 2)
     d or d_model: hidden dim
     n or d_state: latent state dim      (`N` in [1] Algorithm 2)
@@ -38,11 +38,13 @@ from utils.func_utils import (
     KeyArray,
     Array,
 )
+from typing import Optional
 
 
 @dataclass
 class MambaArgs:  # The same as torch version since this does not have any torch specific code
     d_model: int
+    event_based: bool = False
     norm_eps: float = 1e-5
     rms_norm: bool = False
     d_state: int = 16
@@ -77,7 +79,13 @@ class ResidualBlock(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, x: Array, drop_key: KeyArray, training=False):
+    def __call__(
+        self,
+        x: Array,
+        drop_key: KeyArray,
+        integration_timesteps: Optional[Array] = None,
+        training=False,
+    ):
         """
         Args:
             x: shape (l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
@@ -98,7 +106,7 @@ class ResidualBlock(nn.Module):
                 [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> ....
 
         """
-        output = self.mixer(self.norm(x)) + self.dropper(
+        output = self.mixer(self.norm(x), integration_timesteps) + self.dropper(
             x, drop_key=drop_key, training=training
         )
         return output
@@ -124,9 +132,15 @@ class MambaBlock(nn.Module):
         )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
-        self.x_proj = nn.Dense(
-            self.args.dt_rank + self.args.d_state * 2, use_bias=False
-        )
+        if self.args.event_based:
+            # in this case, only B and C are generated from this linear layer
+            self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
+            # dt has a separate projection which operates on time-diffs
+            self.dt_proj = nn.Dense(self.args.dt_rank, use_bias=False)
+        else:
+            self.x_proj = nn.Dense(
+                self.args.dt_rank + self.args.d_state * 2, use_bias=False
+            )
 
         # dt_proj projects Δ from dt_rank to d_in
         self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
@@ -142,7 +156,7 @@ class MambaBlock(nn.Module):
             self.args.d_model, kernel_init=normal(), use_bias=self.args.bias
         )
 
-    def __call__(self, x):
+    def __call__(self, x: Array, integration_timesteps: Optional[Array] = None):
         """Mamba block forward. This looks the same as Figure 3 in Section 3.4 in the Mamba paper [1].
 
         Args:
@@ -156,6 +170,11 @@ class MambaBlock(nn.Module):
             mamba_inner_ref(), https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/selective_scan_interface.py#L311
 
         """
+        if self.args.event_based:
+            assert (
+                integration_timesteps is not None
+            ), "Integration timesteps must be provided for event-based Mamba."
+
         (l, d) = x.shape
 
         x_and_res = self.in_proj(x)  # shape (l, 2 * d_in)
@@ -174,7 +193,7 @@ class MambaBlock(nn.Module):
 
         x = jax.nn.silu(x)
 
-        y = self.ssm(x)
+        y = self.ssm(x, integration_timesteps)
 
         y = y * jax.nn.silu(res)
 
@@ -182,7 +201,7 @@ class MambaBlock(nn.Module):
 
         return output
 
-    def ssm(self, x):
+    def ssm(self, x: Array, integration_timesteps: Optional[Array] = None):
         """Runs the SSM. See:
             - Algorithm 2 in Section 3.2 in the Mamba paper [1]
             - run_SSM(A, B, C, u) in The Annotated S4 [2]
@@ -211,11 +230,19 @@ class MambaBlock(nn.Module):
         x_dbl = self.x_proj(x)  # (l, dt_rank + 2*n)
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
-        (delta, B, C) = jnp.split(
-            x_dbl,
-            indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
-            axis=-1,
-        )  # delta: (l, dt_rank). B, C: (l, n)
+        if self.args.event_based:
+            (B, C) = jnp.split(
+                x_dbl,
+                indices_or_sections=[n],
+                axis=-1,
+            )  # B, C: (l, n)
+            delta = self.dt_proj(integration_timesteps)  # (l, dt_rank)
+        else:
+            (delta, B, C) = jnp.split(
+                x_dbl,
+                indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
+                axis=-1,
+            )  # delta: (l, dt_rank). B, C: (l, n)
         delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
@@ -270,28 +297,3 @@ class MambaBlock(nn.Module):
         y = y + u * D
 
         return y
-
-        # def body_fn(i, carry):
-        #     x, ys = carry
-        #     x = deltaA[i] * x + deltaB_u[i]
-        #     y = jnp.einsum("d n, n -> d", x, C[i, :])
-        #     ys = ys.at[i].set(y)
-        #     return x, ys
-
-        # x = jnp.zeros((d_in, n))
-        # ys = jnp.zeros((l, d_in))
-        # x, ys = jax.lax.fori_loop(0, l, body_fn, (x, ys))
-
-        # def scan_fn(carry, i):
-        #     x, ys = carry
-        #     x = deltaA[i] * x + deltaB_u[i]
-        #     y = jnp.einsum("d n, n -> d", x, C[i, :])
-        #     ys = ys.at[i].set(y)
-        #     return (x, ys), None
-
-        # x = jnp.zeros((d_in, n))
-        # ys = jnp.zeros((l, d_in))
-        # (x, ys), _ = jax.lax.scan(scan_fn, (x, ys), jnp.arange(l))
-
-        # ys = ys + u * D
-        # return ys

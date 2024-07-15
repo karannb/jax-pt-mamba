@@ -114,6 +114,7 @@ def getTrainState(
 def prepInputs(
     pts,
     cls_label,
+    integration_timesteps,
     seg,
     fps_key,
     dropout_key,
@@ -144,6 +145,7 @@ def prepInputs(
     if dist:
         pts = reshape_batch_per_device(pts, num_devices)
         cls_label = reshape_batch_per_device(cls_label, num_devices)
+        integration_timesteps = reshape_batch_per_device(integration_timesteps, num_devices)
         seg = reshape_batch_per_device(seg, num_devices)
         fps_keys = reshape_batch_per_device(fps_keys, num_devices)
         droppath_keys = reshape_batch_per_device(droppath_keys, num_devices)
@@ -158,7 +160,7 @@ def prepInputs(
     pts = customTranspose(pts)
     cls_label = jax.nn.one_hot(cls_label, 16)
 
-    return (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg
+    return (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), seg
 
 
 def trainStep(
@@ -169,11 +171,12 @@ def trainStep(
 
     # Define the loss function
     def loss_fn(params):
-        (pts, cls_label, fps_keys, droppath_keys, dropout_keys), targets = batch
+        (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), targets = batch
         logits, updates = state.apply_fn(
             {"params": params, "batch_stats": state.batch_stats},
             pts,
             cls_label,
+            integration_timesteps,
             fps_keys,
             droppath_keys,
             dropout_keys,
@@ -214,12 +217,13 @@ def evalStep(
     batch: Tuple[jnp.ndarray, jnp.ndarray],
 ) -> jnp.ndarray:
 
-    (pts, cls_label, fps_keys, droppath_keys, dropout_keys), seg = batch
+    (pts, cls_label, integration_timesteps, fps_keys, droppath_keys, dropout_keys), seg = batch
 
     logits = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
         pts,
         cls_label,
+        integration_timesteps,
         fps_keys,
         droppath_keys,
         dropout_keys,
