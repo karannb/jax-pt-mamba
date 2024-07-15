@@ -146,7 +146,7 @@ def parse_args():
         default=False,
         help="Use tracking to w&b.",
     )
-    parser.add_argument("--log_every", type=int, default=10, help="Log every n steps.")
+    parser.add_argument("--eval_every", type=int, default=10, help="Log every n steps.")
 
     args = parser.parse_args()
     # Get Mamba arguments
@@ -176,7 +176,7 @@ def parse_args():
         weight_decay=args.weight_decay,
         alpha_for_decay=args.alpha_for_decay,
         with_tracking=args.with_tracking,
-        log_every=args.log_every,
+        eval_every=args.eval_every,
     )
 
     return point_mamba_args, training_args
@@ -245,8 +245,9 @@ def main():
     metaData = {
         "epoch": 0,
         "best_instance_avg": 0.0,
-        "best_category_avg": 0.0,
+        "best_class_avg": 0.0,
         "best_accuracy": 0.0,
+        "best_class_avg_accuracy": 0.0,
     }
 
     # if a checkpoint exists, load it
@@ -273,7 +274,7 @@ def main():
         init_epoch = restoredState["epoch"]
         metaData["epoch"] = init_epoch
         metaData["best_instance_avg"] = restoredState["best_instance_avg"]
-        metaData["best_category_avg"] = restoredState["best_category_avg"]
+        metaData["best_class_avg"] = restoredState["best_class_avg"]
         metaData["best_accuracy"] = restoredState["best_accuracy"]
 
     # Get number of devices for distributed training
@@ -395,23 +396,31 @@ def main():
         to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Loss: {train_loss/len(trainval_dataset):.4f}, Took {end-start:.2f}s"
         printAndLog(to_print, logger)
 
-        # Evaluate further metrics every log_every epochs
-        if epoch % training_args.log_every == 0:
-            # get IOU scores
-            instance_avg, category_avg = getIOU(
-                np.concatenate(ovr_preds), np.concatenate(ovr_labels)
-            )
-            # get accuracy
-            accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
+        # Evaluate further metrics every eval_every epochs
+        if epoch % training_args.eval_every == 0:
+            # get metrics
+            (
+                accuracy,
+                class_avg_accuracy,
+                class_avg_iou,
+                instance_avg_iou,
+                shape_ious,
+            ) = getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
             # log it
-            to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Instance average IoU: {instance_avg:.4f}, Category average IoU: {category_avg:.4f}, Accuracy: {accuracy*100:.4f}"
+            to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Instance Avg: {instance_avg_iou:.4f}, Train Class Avg: {class_avg_iou:.4f}, Train Accuracy: {accuracy:.4f}, Train Class Avg Accuracy: {class_avg_accuracy:.4f}"
+            printAndLog(to_print, logger)
+            shape_wise = "\n".join(
+                f"{i}: {shape_ious[i]:.4f}" for i in range(len(shape_ious))
+            )
+            to_print = f"[*] Shape-wise IoU:\n{shape_wise}"
             printAndLog(to_print, logger)
             if training_args.with_tracking:
                 wandb.log(
                     {
-                        "train_instance_avg": instance_avg,
-                        "train_category_avg": category_avg,
+                        "train_instance_avg": instance_avg_iou,
+                        "train_class_avg": class_avg_iou,
                         "train_accuracy": accuracy,
+                        "train_class_avg_accuracy": class_avg_accuracy,
                     },
                     step=epoch,
                 )
@@ -459,25 +468,43 @@ def main():
         end = time()
         to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Loss: {eval_loss/len(test_dataset):.4f}, Took {end-start:.2f}s"
         printAndLog(to_print, logger)
-
-        # get IOUs
-        instance_avg, category_avg = getIOU(
-            np.concatenate(ovr_preds), np.concatenate(ovr_labels)
+        # get metrics
+        accuracy, class_avg_accuracy, class_avg_iou, instance_avg_iou, shape_ious = (
+            getIOU(np.concatenate(ovr_preds), np.concatenate(ovr_labels))
         )
-        # get accuracy
-        accuracy = np.mean(np.concatenate(ovr_preds) == np.concatenate(ovr_labels))
-        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Instance average IoU: {instance_avg:.4f}, Category average IoU: {category_avg:.4f}, Accuracy: {accuracy*100:.4f}"
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Instance Avg: {instance_avg_iou:.4f}, Eval Class Avg: {class_avg_iou:.4f}, Eval Accuracy: {accuracy:.4f}, Eval Class Avg Accuracy: {class_avg_accuracy:.4f}"
         printAndLog(to_print, logger)
+        shape_wise = "\n".join(
+            f"{i}: {shape_ious[i]:.4f}" for i in range(len(shape_ious))
+        )
+        to_print = f"[*] Shape-wise IoU:\n{shape_wise}"
+        printAndLog(to_print, logger)
+
+        # Log to wandb
+        if training_args.with_tracking:
+            wandb.log(
+                {
+                    "eval_loss": eval_loss / len(test_dataset),
+                    "eval_time": end - start,
+                    "eval_instance_avg": instance_avg_iou,
+                    "eval_class_avg": class_avg_iou,
+                    "eval_accuracy": accuracy,
+                    "eval_class_avg_accuracy": class_avg_accuracy,
+                },
+                step=epoch,
+            )
 
         # update metaData
         metaData["epoch"] = epoch + 1
 
         # compare with best metrics
-        if category_avg > metaData["best_category_avg"]:
-            metaData["best_category_avg"] = metaData["best_category_avg"]
+        if class_avg_iou > metaData["best_class_avg"]:
+            metaData["best_class_avg"] = metaData["best_class_avg"]
         if accuracy > metaData["best_accuracy"]:
             metaData["best_accuracy"] = metaData["best_accuracy"]
-        if instance_avg > metaData["best_instance_avg"]:
+        if class_avg_accuracy > metaData["best_class_avg_accuracy"]:
+            metaData["best_class_avg_accuracy"] = metaData["best_class_avg_accuracy"]
+        if instance_avg_iou > metaData["best_instance_avg"]:
             # save the model
             metaData["best_instance_avg"] = metaData["best_instance_avg"]
             best_path = ocp.test_utils.erase_and_create_empty(

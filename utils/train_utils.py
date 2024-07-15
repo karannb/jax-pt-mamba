@@ -57,7 +57,7 @@ class TrainingConfig:
     weight_decay: float = 5e-4
     alpha_for_decay: float = 0.0
     with_tracking: bool = False
-    log_every: int = 10
+    eval_every: int = 10
 
 
 def getModelAndOpt(
@@ -237,56 +237,70 @@ def evalStep(
     return loss, preds
 
 
-def getIOU(preds: np.ndarray, targets: np.ndarray) -> Tuple[np.ndarray, List[float]]:
-    """
-    Computes the Intersection over Union (IoU) for predictions and targets, according to the calculation in the
-    PointMamba paper. Source: https://github.com/LMD0311/PointMamba/blob/main/part_segmentation/main.py
+def getIOU(
+    logits: np.ndarray, targets: np.ndarray
+) -> Tuple[float, float, float, float, Dict[str, float]]:
 
-    :param preds: predicted labels for each point in the sequence. Shape: [B, N, C]
-    :param targets: ground truth labels for each point in the sequence. Shape: [B, N, C]
-    """
-    categories = []
-    ious = []
+    total_seen = 0
+    total_correct = 0
+    total_seen_class = [0 for _ in range(50)]
+    total_correct_class = [0 for _ in range(50)]
+    shape_ious = {cat: [] for cat in category_to_labels.keys()}
 
-    for pred, target in zip(preds, targets):
-        # Get the category of the item by checking one of the labels in the target
+    for logit, target in zip(logits, targets):
+
+        # get prediciton
         category = label_to_category[target[0]]
+        cat_inds = category_to_labels[
+            category
+        ]  # i.e. get all part labels for this category
+        logit = logit[:, cat_inds]  # keep only the parts for this category
+        pred = np.argmax(logit, axis=1) + cat_inds[0]  # get the part label
 
-        # Get parts corresponding to the category
-        parts = category_to_labels[category]
-        num_parts = len(parts)
+        # compute accuracy of this pred, target pair
+        total_seen += len(target)
+        total_correct += np.sum(pred == target)
 
-        # Initialize IoUs for each part
-        part_ious = np.zeros((num_parts,))
+        # compute class-wise accuracy metrics
+        for part in cat_inds:
+            total_seen_class[part] += np.sum(target == part)
+            total_correct_class[part] += np.sum((pred == part) & (target == part))
 
-        # Create masks for target and prediction
-        target_masks = (target[:, None] == parts).astype(np.int32)
-        pred_masks = (pred[:, None] == parts).astype(np.int32)
+        # compute part-wise IoU and average it to get shape IoU
+        part_ious = [0.0 for _ in cat_inds]
+        for part in cat_inds:
+            I = np.sum((pred == part) & (target == part))
+            U = np.sum((pred == part) | (target == part))
+            if U != 0:
+                part_ious[part - cat_inds[0]] = I / U
+            else:
+                part_ious[part - cat_inds[0]] = 1.0
+        shape_ious[category].append(np.mean(part_ious))
 
-        # Calculate IoU for each part
-        intersection = np.sum(target_masks & pred_masks, axis=0)
-        union = np.sum(target_masks | pred_masks, axis=0)
-        part_ious = np.where(union == 0, 1.0, intersection / union)
+    # compute accuracy metrics
+    accuracy = total_correct / total_seen
+    class_avg_accuracy = np.mean(
+        np.array(total_correct_class) / np.array(total_seen_class)
+    )
 
-        categories.append(category)
-        ious.append(part_ious.mean())
+    all_shape_ious = []
+    for cat in shape_ious.keys():
+        all_shape_ious.extend(shape_ious[cat])
+        shape_ious[cat] = np.mean(
+            shape_ious[cat]
+        )  # average over all shapes in this category
 
-        instance_avg_iou = np.mean(ious)
-        category_avg_iou = np.mean(
-            [
-                np.mean(ious[categories == category])
-                for category in list(category_to_labels.keys())
-            ]
-        )
+    class_avg_iou = np.mean(shape_ious.values())
+    instance_avg_iou = np.mean(all_shape_ious)
 
-    return instance_avg_iou, category_avg_iou
+    return accuracy, class_avg_accuracy, class_avg_iou, instance_avg_iou, shape_ious
 
 
-def setupDirs(log_dir: str, run_name: Optional[str] = None):
-    
+def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
+
     if run_name is None:
         run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
-        
+
     # make the run directory
     os.mkdir(join(log_dir, run_name))
     # log file path
@@ -297,6 +311,5 @@ def setupDirs(log_dir: str, run_name: Optional[str] = None):
     checkpoint_dir = os.path.abspath(join(log_dir, run_name, "checkpoints"))
     # because this is always used for orbax stuff, return a orbax path
     checkpoint_dir = ocp.test_utils.erase_and_create_empty(checkpoint_dir)
-    
+
     return log_file, config_file, checkpoint_dir
-    
