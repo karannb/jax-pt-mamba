@@ -1,18 +1,20 @@
-#!/bin/sh
+#!/bin/sh -x
 
-#SBATCH --job-name=jax-port
+#SBATCH --job-name=port
 #SBATCH --account=eelsaisdc
 #SBATCH --partition=booster
 #SBATCH --nodes=1
-#SBATCH --time=10:00:00
-#SBATCH --mem=64GB
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=08:00:00
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:4
-#SBATCH --output=./logs/%j.out
-#SBATCH --error=./logs/%j.err
+#SBATCH --hint=multithread
+#SBATCH --output=logs/%j.out
+#SBATCH --error=logs/%j.err
 
 # Load the required modules and activate the virtual environment
 source ~/.bash_profile
 load_v1
 source $ENV_DIR/pointmamba/bin/activate
 
-python3 main.py --epochs 100 --with_tracking --event_based
+python3 main.py --epochs 50 --with_tracking --event_based

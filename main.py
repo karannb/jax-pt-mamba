@@ -148,7 +148,7 @@ def parse_args():
         "--weight_decay", type=float, default=5e-4, help="Weight decay."
     )
     parser.add_argument(
-        "--alpha_for_decay", type=float, default=0.0, help="Alpha for decay."
+        "--alpha_for_decay", type=float, default=1e-6, help="Alpha for decay."
     )
     parser.add_argument(
         "--with_tracking",
@@ -157,14 +157,19 @@ def parse_args():
         help="Use tracking to w&b.",
     )
     parser.add_argument("--eval_every", type=int, default=10, help="Log every n steps.")
-    
+
     # One logging arg
-    parser.add_argument("--log_to_console", action="store_true", default=False, help="Log to console.")
-    
+    parser.add_argument(
+        "--log_to_console", action="store_true", default=False, help="Log to console."
+    )
+
     args = parser.parse_args()
     # Get Mamba arguments
     mamba_args = MambaArgs(
-        **{arg: getattr(args, arg, None) for arg in MambaArgs.__dataclass_fields__.keys()}
+        **{
+            arg: getattr(args, arg, None)
+            for arg in MambaArgs.__dataclass_fields__.keys()
+        }
     )
     mamba_args.conv_bias = not args.no_conv_bias
     # Get PointMamba arguments
@@ -192,10 +197,10 @@ def parse_args():
         with_tracking=args.with_tracking,
         eval_every=args.eval_every,
     )
-    
+
     # Set the logging to console
     log2console = args.log_to_console
-    
+
     return point_mamba_args, training_args
 
 
@@ -240,10 +245,16 @@ def main():
     args_as_string = "\n".join([f"{k}: {v}" for k, v in training_args.__dict__.items()])
     to_print = f"[*] Training Args: {args_as_string}"
     printAndLog(to_print, logger)
-    
+
     # Create model, optimizer, scheduler and opt_state
     to_print = "[*] Creating model, optimizer, scheduler and opt_state..."
     printAndLog(to_print, logger)
+    warmup_steps = 10 * len(ShapenetPartDataset()) // training_args.batch_size
+    decay_steps = (
+        training_args.num_epochs
+        * len(ShapenetPartDataset())
+        // training_args.batch_size
+    ) - warmup_steps
     model, params, batch_stats, optimizer = getModelAndOpt(
         point_mamba_args,
         16,
@@ -252,9 +263,8 @@ def main():
         "adamw",
         training_args.learning_rate,
         training_args.weight_decay,
-        decay_steps=training_args.num_epochs
-        * len(ShapenetPartDataset())
-        // training_args.batch_size,
+        decay_steps=decay_steps,
+        warmup_steps=warmup_steps,
         alpha=training_args.alpha_for_decay,
     )
 
@@ -262,7 +272,7 @@ def main():
     to_print = "[*] Creating train state..."
     printAndLog(to_print, logger)
     state = getTrainState(model, params, batch_stats, optimizer)
-    
+
     # create meta state
     metaData = {
         "epoch": 0,
@@ -386,7 +396,7 @@ def main():
         start = time()
         for inputs in tqdm(train_dataloader, total=len(train_dataloader)):
             (pts, cls_label, seg) = inputs
-            
+
             # prepare inputs
             batch = prepInputs(
                 pts,
@@ -561,12 +571,14 @@ def main():
                 force=True,
             )
             del new_state
-            
+
         if epoch % 50 == 0:
             # save the model
             to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Saving checkpoint..."
             printAndLog(to_print, logger)
-            ckpt_path = ocp.test_utils.erase_and_create_empty(checkpoint_dir / f"ckpt_{epoch}")
+            ckpt_path = ocp.test_utils.erase_and_create_empty(
+                checkpoint_dir / f"ckpt_{epoch}"
+            )
             point_mamba2save = copy(point_mamba_args).__dict__
             point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
             if dist:

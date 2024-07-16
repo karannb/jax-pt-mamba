@@ -71,6 +71,7 @@ def getModelAndOpt(
     learning_rate: float = 1e-3,
     weight_decay: float = 5e-2,
     decay_steps: int = 1000,
+    warmup_steps: int = 100,
     alpha: float = 0.0,
 ) -> Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation]:
     # Get the model
@@ -80,8 +81,13 @@ def getModelAndOpt(
     opt = str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay)
 
     # Scheduler
-    sched = optax.cosine_decay_schedule(
-        init_value=learning_rate, decay_steps=decay_steps, alpha=alpha
+    warmup_sched = optax.constant_schedule(alpha)
+    cosine_sched = optax.cosine_decay_schedule(
+        init_value=alpha, decay_steps=decay_steps, alpha=alpha
+    )
+    boundaries = [warmup_steps]
+    sched = optax.join_schedules(
+        schedules=[warmup_sched, cosine_sched], boundaries=boundaries
     )
 
     # Initialize the optimizer and get opt_state
