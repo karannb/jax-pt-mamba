@@ -219,7 +219,7 @@ class Encoder(nn.Module):
         global_feature = jnp.max(
             feature, axis=1, keepdims=True
         )  # max pooling across all points in a group
-        feature = jnp.concatenate([global_feature.repeat(M, axis=1), pc], axis=-1)
+        feature = jnp.concatenate([global_feature.repeat(M, axis=1), feature], axis=-1)
         # (G, M, 256) || (G, 1, 256) -> (G, M, 512)
 
         # Second convolution
@@ -479,7 +479,7 @@ class PointMamba(nn.Module):
         features_list = [
             customTranspose(self.post_norm(feature)) for feature in features_list
         ]
-        x = jnp.concatenate(features_list, axis=1)  # (d_model*len(fetch_idx), G*3)
+        x = jnp.concatenate(features_list, axis=0)  # (d_model*len(fetch_idx), G*3)
 
         x_max = jnp.max(x, axis=1)  # (d_model*len(fetch_idx)), max_pooling
         x_avg = jnp.mean(x, axis=1)  # mean_pooling
@@ -552,17 +552,14 @@ def getModel(
     dropout_keys = random.split(dropout_key, 2)
     # Instantiate the model
     model = BatchedPointMamba(config=config, classes=num_classes, parts=num_parts)
-    # Initialize the model
+    # init args
     dummy_x = random.normal(input_key, (2, 3, 1024))
     dummy_cls = random.randint(
         input_key, (2, 1), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
-    # dummy_integration_timesteps = None
-    # if config.mamba_args.event_based:
-    #     dummy_integration_timesteps = random.uniform(
-    #         input_key, (2, 1), minval=0.0, maxval=1.0
-    #     )
+    
+    # Initialize the model
     variables = model.init(
         model_key,
         dummy_x,

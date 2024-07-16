@@ -7,7 +7,7 @@ from jax._src.basearray import Array
 import flax.linen as nn
 
 from jax import lax
-from typing import Union
+from typing import Union, Optional
 from utils.func_utils import customTranspose
 
 KeyArray = Union[Array, prng.PRNGKeyArray]
@@ -150,7 +150,7 @@ class PointNetFeaturePropagation(nn.Module):
         self,
         xyz1: Array,
         xyz2: Array,
-        points1: Array,
+        points1: Optional[Array],
         points2: Array,
         training: bool = False,
     ) -> Array:
@@ -201,7 +201,7 @@ class PointNetFeaturePropagation(nn.Module):
             points1 = customTranspose(points1)  # [N, D]
             new_points = jnp.concatenate(
                 [points1, interpolated_points], axis=-1
-            )  # [N, D'+D]
+            )  # [N, D'+ D]
         else:
             new_points = interpolated_points  # [N, D']
 
