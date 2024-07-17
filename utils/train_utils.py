@@ -378,10 +378,18 @@ def out_projInitializer(
             use, throw_away = random.split(key)
             if "layers_" in param:
                 layer_num = int(param.split("_")[-1]) + 1
-                updated_params = out_projInitializer(
-                    updated_params, params[param], use, residuals_per_layer, layer_num
+                out_projInitializer(
+                    updated_params[param],
+                    params[param],
+                    use,
+                    residuals_per_layer,
+                    layer_num,
                 )
             else:
-                updated_params = out_projInitializer(
-                    updated_params, params[param], use, residuals_per_layer, layer_num
+                out_projInitializer(
+                    updated_params[param],
+                    params[param],
+                    use,
+                    residuals_per_layer,
+                    layer_num,
                 )

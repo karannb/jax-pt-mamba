@@ -26,7 +26,7 @@ def pc_normalize(pc):
 # Dataset class
 class ShapenetPartDataset(Dataset):
     def __init__(
-        self, split="train", class_choice=None, normal_channel=False, num_points=2048
+        self, split="trainval", class_choice=None, normal_channel=False, num_points=2048
     ):
         self.root = os.path.join(
             os.environ.get("SCRATCH"),

@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 source $ENV_DIR/pointmamba/bin/activate
 
-python3 main.py --epochs 50 --with_tracking --event_based
+python3 main.py --epochs 50 --with_tracking --weight_decay 0.00005 --run_name init_debugged_event_based --event_based
