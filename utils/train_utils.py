@@ -81,9 +81,11 @@ def getModelAndOpt(
     opt = str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay)
 
     # Scheduler
-    warmup_sched = optax.constant_schedule(alpha)
+    warmup_sched = optax.linear_schedule(
+        init_value=alpha, end_value=learning_rate, transition_steps=warmup_steps
+    )
     cosine_sched = optax.cosine_decay_schedule(
-        init_value=alpha, decay_steps=decay_steps, alpha=alpha
+        init_value=learning_rate, decay_steps=decay_steps, alpha=alpha
     )
     boundaries = [warmup_steps]
     sched = optax.join_schedules(
@@ -91,7 +93,9 @@ def getModelAndOpt(
     )
 
     # Initialize the optimizer and get opt_state
-    optimizer = optax.chain(optax.scale_by_schedule(sched), opt)
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(10), optax.scale_by_schedule(sched), opt
+    )
 
     return model, params, batch_stats, optimizer  # , opt_state
 
@@ -319,7 +323,7 @@ def getIOU(
 def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
 
     if run_name == None:
-        run_name = uuid.uuid4().hex[:6] # generate a random run name
+        run_name = uuid.uuid4().hex[:6]  # generate a random run name
         print(f"Run name not provided. Using {run_name} as run name")
 
     # make the run directory
