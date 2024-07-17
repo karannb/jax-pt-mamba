@@ -2,6 +2,8 @@ import os
 from os.path import join
 import jax
 import uuid
+import flax
+import math
 import optax
 import numpy as np
 from jax import random
@@ -338,3 +340,48 @@ def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
     checkpoint_dir = ocp.test_utils.erase_and_create_empty(checkpoint_dir)
 
     return log_file, config_file, checkpoint_dir
+
+
+def out_projInitializer(
+    updated_params: flax.core.FrozenDict,
+    params: flax.core.FrozenDict,
+    key=jax.random.PRNGKey(0),
+    residuals_per_layer=1,
+    layer_num=None,
+):
+    """
+    Reinitialize the out_proj layer to make it kaiming normal, and also be similar to GPT2 init.
+    This is from Mamba's code base.
+    Does not return anything, but updates the updated_params in place.
+    Ideal usage would be by creating an updated params as :
+    ```
+    from copy import deepcopy
+    updated_params = deepcopy(params)
+    ```
+    If using an MLP, set residuals_per_layer to 2.
+    """
+
+    if "out_proj" in params:
+        assert layer_num != None, "Layer number not provided by parent calls."
+        shape = params["out_proj"]["kernel"].shape
+        # make it kiaming normal
+        updated_params["out_proj"]["kernel"] = (
+            jax.random.normal(key, shape) * (2 / shape[0]) ** 0.5
+        )
+        # take num_residuals in account
+        updated_params["out_proj"]["kernel"] /= math.sqrt(
+            residuals_per_layer * layer_num
+        )
+
+    elif isinstance(params, dict):
+        for param in params.keys():
+            use, throw_away = random.split(key)
+            if "layers_" in param:
+                layer_num = int(param.split("_")[-1]) + 1
+                updated_params = out_projInitializer(
+                    updated_params, params[param], use, residuals_per_layer, layer_num
+                )
+            else:
+                updated_params = out_projInitializer(
+                    updated_params, params[param], use, residuals_per_layer, layer_num
+                )

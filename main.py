@@ -10,13 +10,13 @@ import os
 import json
 import numpy as np
 import time as time_
-from copy import copy
 from time import time
 from tqdm import tqdm
 from typing import TextIO
 from flax import jax_utils
 from functools import partial
 import orbax.checkpoint as ocp
+from copy import copy, deepcopy
 from argparse import ArgumentParser
 
 from models.mamba import MambaArgs
@@ -30,6 +30,7 @@ from utils.augment_utils import (
 )
 from utils.train_utils import (
     TrainingConfig,
+    out_projInitializer,
     getModelAndOpt,
     getTrainState,
     prepInputs,
@@ -267,6 +268,15 @@ def main():
         warmup_steps=warmup_steps,
         alpha=training_args.alpha_for_decay,
     )
+
+    # re-initialize the out_proj layer
+    updated_params = deepcopy(params)
+    out_projInitializer(updated_params, params, residuals_per_layer=1, layer_num=None)
+    prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
+    params = updated_params
+    assert not jax.numpy.allclose(
+        params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"], prev_0_out_proj
+    ), "out_proj not re-initialized."
 
     # Initialize the train state
     to_print = "[*] Creating train state..."

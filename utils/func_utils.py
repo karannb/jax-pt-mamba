@@ -58,7 +58,9 @@ def knn(ref: Array, query: Array, k: int) -> Array:
     # return idx
 
 
-def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> None:
+def printParams(
+    params: Union[Dict[str, Any], FrozenDict], prefix: str = "params"
+) -> None:
     """
     Recursively print the parameters of a model with names and shapes.
 
@@ -77,9 +79,9 @@ def printParams(params: Union[Dict[str, Any], FrozenDict], prefix: str = "") -> 
     """
     for key, value in params.items():
         if isinstance(value, dict) or isinstance(value, flax.core.FrozenDict):
-            printParams(value, prefix=prefix + key + "/")
+            printParams(value, prefix=prefix + '["' + key + '"]')
         else:
-            print(f"{prefix}{key}: {value.shape}")
+            print(f'{prefix}["{key}"]: {value.shape}')
 
     return
 

@@ -460,12 +460,12 @@ class PointMamba(nn.Module):
         )  # (G*3, encoder_channels)
         pos = sortSelectAndConcat(pos, inds)
         center = sortSelectAndConcat(center, inds)
-        
+
         # calculate integration timesteps from the centers
         ovr_inds = jnp.concatenate(inds, axis=0)
-        timesteps = center[:, 0][ovr_inds] # get center_x and sort with inds
+        timesteps = center[:, 0][ovr_inds]  # get center_x and sort with inds
         integration_timesteps = jnp.diff(timesteps, axis=0, append=timesteps[-1:])
-        
+
         # Run the Mamba model
         features_list = self.blocks(
             x=group_input_tokens,
@@ -558,7 +558,7 @@ def getModel(
         input_key, (2, 1), minval=0, maxval=num_classes, dtype=jnp.int32
     )
     dummy_cls = jax.nn.one_hot(dummy_cls, num_classes)
-    
+
     # Initialize the model
     variables = model.init(
         model_key,
@@ -570,16 +570,16 @@ def getModel(
         False,
     )
 
+    params, batch_stats = variables["params"], variables["batch_stats"]
+
     # Print the model parameters
     if verbose:
         # Print the model parameters
-        printParams(variables["params"])
+        printParams(params)
 
-    # Print number of parameters, taken from
-    # https://github.com/google/jax/discussions/6153
-    num_params = sum(x.size for x in jax.tree_util.tree_leaves(variables["params"]))
+    num_params = sum(
+        [arr.size for arr in jax.tree.flatten(params)[0] if isinstance(arr, Array)]
+    )
     print(f"\nInstantiated Point-Mamba has about {num_params/1e6:.3f}M parameters\n")
-
-    params, batch_stats = variables["params"], variables["batch_stats"]
 
     return model, params, batch_stats
