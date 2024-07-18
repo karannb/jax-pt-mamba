@@ -136,7 +136,7 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self.dt_proj = nn.Dense(1, use_bias=False) 
+            self.dt_proj = self.param("dt_proj", nn.initializers.ones, (1,))
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
@@ -236,7 +236,8 @@ class MambaBlock(nn.Module):
                 indices_or_sections=[n],
                 axis=-1,
             )  # B, C: (l, n)
-            delta = self.dt_proj(integration_timesteps)  # (l, 1)
+            delta = integration_timesteps  # (l, 1)
+            # delta = self.dt_proj * integration_timesteps[:, None]  # (l, 1)
         else:
             (delta, B, C) = jnp.split(
                 x_dbl,
@@ -246,12 +247,12 @@ class MambaBlock(nn.Module):
             delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
-            x, delta, A, B, C, D, integration_timesteps
+            x, delta, A, B, C, D
         )  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
 
         return y
 
-    def selective_scan(self, u, delta, A, B, C, D, integration_timesteps):
+    def selective_scan(self, u, delta, A, B, C, D):
         """Does selective scan algorithm. See:
             - Section 2 State Space Models in the Mamba paper [1]
             - Algorithm 2 in Section 3.2 in the Mamba paper [1]
@@ -284,8 +285,8 @@ class MambaBlock(nn.Module):
         # Async discretization
         if self.args.event_based:
             identity = jnp.ones(n)
-            A_bar = jnp.einsum("l 1, d n -> l d n", delta, A)/integration_timesteps[:, None]
-            B_bar = (1/A)*(A_bar - identity[None, None, :])*B[:, None, :]
+            A_bar = jnp.einsum("1, l 1, d n -> l d n", self.dt_proj, delta, A)
+            B_bar = (1/A)*(jnp.exp(self.dt_proj * A) - identity[None, :])*B[:, None, :]
             deltaA = jnp.exp(A_bar)
             deltaB_u = jnp.einsum("l d n, l d -> l d n", B_bar, u)
             

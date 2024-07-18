@@ -146,7 +146,7 @@ def parse_args():
         "--learning_rate", type=float, default=0.0002, help="Learning rate."
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=5e-2, help="Weight decay."
+        "--weight_decay", type=float, default=1e-5, help="Weight decay."
     )
     parser.add_argument(
         "--alpha_for_decay", type=float, default=1e-6, help="Alpha for decay."

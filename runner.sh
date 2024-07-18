@@ -5,7 +5,7 @@
 #SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:4
 #SBATCH --hint=multithread
@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 source $ENV_DIR/pointmamba/bin/activate
 
-python3 main.py --epochs 50 --with_tracking --run_name async_init --event_based
+python3 main.py --epochs 50 --with_tracking --run_name async --event_based
