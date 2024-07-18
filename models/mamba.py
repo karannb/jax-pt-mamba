@@ -136,7 +136,7 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self._dt_proj_ = nn.Dense(self.args.d_inner, use_bias=False)
+            self.dt_proj = nn.Dense(1, use_bias=False) 
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
@@ -236,7 +236,7 @@ class MambaBlock(nn.Module):
                 indices_or_sections=[n],
                 axis=-1,
             )  # B, C: (l, n)
-            delta = self._dt_proj_(integration_timesteps)  # (l, d_in)
+            delta = self.dt_proj(integration_timesteps)  # (l, 1)
         else:
             (delta, B, C) = jnp.split(
                 x_dbl,
@@ -280,20 +280,18 @@ class MambaBlock(nn.Module):
         """
         (l, d_in) = u.shape
         n = A.shape[1]
-
-        # Discretize continuous parameters (A, B)
-        deltaA = jnp.exp(jnp.einsum("l d, d n -> l d n", delta, A))
-        deltaB_u = jnp.einsum("l d, l n, l d -> l d n", delta, B, u)
-
-        # # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
-        # x = jnp.zeros((d_in, n))
-        # ys = []
-        # for i in range(l):
-        #     x = deltaA[i] * x + deltaB_u[i]
-        #     y = jnp.einsum("d n, n -> d", x, C[i, :])
-        #     ys.append(y)
         
-        # y = jnp.stack(ys, axis=0)  # shape (l, d_in)
+        # Async discretization
+        if self.args.event_based:
+            identity = jnp.ones(n)
+            deltaA = jnp.exp(jnp.einsum("l 1, d n -> l d n", delta, A))
+            B_bar = (1/A)*(deltaA - identity[None, None, :])*B[:, None, :]
+            deltaB_u = jnp.einsum("l d n, l d -> l d n", B_bar, u)
+            
+        # Discretize continuous parameters (A, B) as in Mamba
+        else:
+            deltaA = jnp.exp(jnp.einsum("l d, d n -> l d n", delta, A))
+            deltaB_u = jnp.einsum("l d, l n, l d -> l d n", delta, B, u)
         
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
         x = jnp.zeros((d_in, n))
