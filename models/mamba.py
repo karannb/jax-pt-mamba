@@ -136,14 +136,13 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self._dt_proj_ = nn.Dense(self.args.dt_rank, use_bias=False)
+            self._dt_proj_ = nn.Dense(self.args.d_inner, use_bias=False)
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
             )
-
-        # dt_proj projects Δ from dt_rank to d_in
-        self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
+            # dt_proj projects Δ from dt_rank to d_in
+            self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
 
         A = jnp.tile(jnp.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
         self.A_log = self.param(
@@ -231,20 +230,20 @@ class MambaBlock(nn.Module):
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
         if self.args.event_based:
+            assert integration_timesteps is not None, "Integration timesteps must be provided for event-based Mamba."
             (B, C) = jnp.split(
                 x_dbl,
                 indices_or_sections=[n],
                 axis=-1,
             )  # B, C: (l, n)
-            delta = self._dt_proj_(integration_timesteps)  # (l, dt_rank)
+            delta = self._dt_proj_(integration_timesteps)  # (l, d_in)
         else:
             (delta, B, C) = jnp.split(
                 x_dbl,
                 indices_or_sections=[self.args.dt_rank, self.args.dt_rank + n],
                 axis=-1,
             )  # delta: (l, dt_rank). B, C: (l, n)
-            
-        delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
+            delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
             x, delta, A, B, C, D
@@ -286,15 +285,26 @@ class MambaBlock(nn.Module):
         deltaA = jnp.exp(jnp.einsum("l d, d n -> l d n", delta, A))
         deltaB_u = jnp.einsum("l d, l n, l d -> l d n", delta, B, u)
 
+        # # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
+        # x = jnp.zeros((d_in, n))
+        # ys = []
+        # for i in range(l):
+        #     x = deltaA[i] * x + deltaB_u[i]
+        #     y = jnp.einsum("d n, n -> d", x, C[i, :])
+        #     ys.append(y)
+        
+        # y = jnp.stack(ys, axis=0)  # shape (l, d_in)
+        
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
         x = jnp.zeros((d_in, n))
-        ys = []
-        for i in range(l):
+        def body_fn(x, i):
             x = deltaA[i] * x + deltaB_u[i]
             y = jnp.einsum("d n, n -> d", x, C[i, :])
-            ys.append(y)
-        y = jnp.stack(ys, axis=0)  # shape (l, d_in)
-
+            return x, y
+        
+        _, ys = jax.lax.scan(body_fn, x, jnp.arange(l))
+        y = jnp.stack(ys, axis=0)
+        
         y = y + u * D
 
         return y

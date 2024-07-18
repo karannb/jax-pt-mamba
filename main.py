@@ -570,6 +570,8 @@ def main():
             point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
             if dist:
                 new_state = jax_utils.unreplicate(state)
+            else:
+                new_state = state
             handler.save(
                 best_path,
                 args=ocp.args.Composite(
@@ -593,6 +595,8 @@ def main():
             point_mamba2save["mamba_args"] = point_mamba2save["mamba_args"].__dict__
             if dist:
                 new_state = jax_utils.unreplicate(state)
+            else:
+                new_state = state
             handler.save(
                 ckpt_path,
                 args=ocp.args.Composite(

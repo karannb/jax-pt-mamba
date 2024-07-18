@@ -9,6 +9,7 @@ import numpy as np
 from jax import random
 from jax._src import prng
 from jax import numpy as jnp
+from functools import partial
 import orbax.checkpoint as ocp
 from dataclasses import dataclass
 from flax.training import train_state
@@ -95,8 +96,18 @@ def getModelAndOpt(
     )
 
     # Initialize the optimizer and get opt_state
+    # keep no weight decay for bias and batch norm params
     optimizer = optax.chain(
-        optax.clip_by_global_norm(10), optax.scale_by_schedule(sched), opt
+        optax.clip_by_global_norm(10),
+        optax.scale_by_schedule(sched),
+        optax.masked(
+            str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay),
+            mask=partial(jax.tree_map, lambda p: p.ndim != 1),
+        ),
+        optax.masked(
+            str2opt[opt_name](learning_rate=learning_rate, weight_decay=0.0),
+            mask=partial(jax.tree_map, lambda p: p.ndim == 1),
+        ),
     )
 
     return model, params, batch_stats, optimizer  # , opt_state
