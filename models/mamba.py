@@ -246,12 +246,12 @@ class MambaBlock(nn.Module):
             delta = jax.nn.softplus(self.dt_proj(delta))  # (l, d_in)
 
         y = self.selective_scan(
-            x, delta, A, B, C, D
+            x, delta, A, B, C, D, integration_timesteps
         )  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
 
         return y
 
-    def selective_scan(self, u, delta, A, B, C, D):
+    def selective_scan(self, u, delta, A, B, C, D, integration_timesteps):
         """Does selective scan algorithm. See:
             - Section 2 State Space Models in the Mamba paper [1]
             - Algorithm 2 in Section 3.2 in the Mamba paper [1]
@@ -284,8 +284,9 @@ class MambaBlock(nn.Module):
         # Async discretization
         if self.args.event_based:
             identity = jnp.ones(n)
-            deltaA = jnp.exp(jnp.einsum("l 1, d n -> l d n", delta, A))
-            B_bar = (1/A)*(deltaA - identity[None, None, :])*B[:, None, :]
+            A_bar = jnp.einsum("l 1, d n -> l d n", delta, A)/integration_timesteps[:, None]
+            B_bar = (1/A)*(A_bar - identity[None, None, :])*B[:, None, :]
+            deltaA = jnp.exp(A_bar)
             deltaB_u = jnp.einsum("l d n, l d -> l d n", B_bar, u)
             
         # Discretize continuous parameters (A, B) as in Mamba
