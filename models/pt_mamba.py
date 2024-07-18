@@ -41,7 +41,7 @@ class PointMambaArgs:
     num_group: int = 128
     group_size: int = 32
     encoder_channels: int = 384
-    fetch_idx: Tuple[int] = (1, 3, 7)
+    fetch_idx: Tuple[int] = (3, 7, 11)
     leaky_relu_slope: float = 0.2
 
 
@@ -246,7 +246,7 @@ class MixerModelForSegmentation(nn.Module):
     conv_bias: bool = True
     bias: bool = False
     drop_path: float = 0.1
-    fetch_idx: Tuple[int] = (1, 3, 7)
+    fetch_idx: Tuple[int] = (3, 7, 11)
 
     # drop_out_in_block: int = 0.
     # residual_in_fp32=False
@@ -321,7 +321,7 @@ class MixerModelForSegmentation(nn.Module):
                 integration_timesteps,
                 training=training,
             )
-            if (i + 1) in self.fetch_idx:
+            if i in self.fetch_idx:
                 features.append(hidden_states)
 
         hidden_states = self.out_norm(hidden_states)
