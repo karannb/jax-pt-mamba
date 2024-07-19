@@ -295,7 +295,7 @@ class MambaBlock(nn.Module):
             A_bar = jnp.einsum("1, l 1, d n -> l d n", self.dt_proj, delta, A)
             B_bar = (
                 (1 / A)
-                * (jnp.exp(A_bar) - identity[None, :])
+                * (jnp.exp(self.dt_proj * A) - identity[None, :]) # A_bar
                 * B[:, None, :]
             )
             deltaA = jnp.exp(A_bar)

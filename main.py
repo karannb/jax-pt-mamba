@@ -119,8 +119,9 @@ def parse_args():
     )
     parser.add_argument(
         "--fetch_idx",
-        type=tuple,
-        default=(3, 7, 11),
+        type=int,
+        nargs="+",
+        default=[3, 7, 11],
         help="Indices to fetch the features.",
     )
     parser.add_argument(
@@ -165,6 +166,8 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    # make fetch_idx a tuple
+    args.fetch_idx = tuple(args.fetch_idx)
     # Get Mamba arguments
     mamba_args = MambaArgs(
         **{
