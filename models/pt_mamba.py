@@ -311,20 +311,23 @@ class MixerModelForSegmentation(nn.Module):
         features = []
 
         hidden_states = x + pos
+        residual = None
 
         for i, layer in enumerate(self.layers):
             # Split the key for drop path in each layer
-            used_keys, droppath_key = random.split(droppath_key)
-            hidden_states = layer(
+            used_key, droppath_key = random.split(droppath_key)
+            hidden_states, residual = layer(
                 hidden_states,
-                used_keys,
+                residual,
+                used_key,
                 integration_timesteps,
                 training=training,
             )
             if i in self.fetch_idx:
-                features.append(hidden_states)
-
-        hidden_states = self.out_norm(hidden_states)
+                out = self.out_norm(
+                    hidden_states + residual if residual is not None else hidden_states
+                )
+                features.append(out)
 
         return features
 

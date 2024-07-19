@@ -15,6 +15,6 @@
 # Load the required modules and activate the virtual environment
 source ~/.bash_profile
 load_v1
-source $ENV_DIR/pointmamba/bin/activate
+activate_jaxpm
 
-python3 main.py --epochs 50 --with_tracking --run_name async --event_based
+python3 main.py --epochs 50 --with_tracking --run_name async_small_lr --event_based --learning_rate 1e-5

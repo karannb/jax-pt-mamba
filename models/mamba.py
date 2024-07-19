@@ -82,6 +82,7 @@ class ResidualBlock(nn.Module):
     def __call__(
         self,
         x: Array,
+        residual: Array,
         drop_key: KeyArray,
         integration_timesteps: Optional[Array] = None,
         training=False,
@@ -106,10 +107,14 @@ class ResidualBlock(nn.Module):
                 [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> [Norm -> Mamba -> Add] -> ....
 
         """
-        output = self.mixer(self.norm(x), integration_timesteps) + self.dropper(
-            x, drop_key=drop_key, training=training
+        residual = (
+            (self.dropper(x, drop_key=drop_key, training=training) + residual)
+            if residual is not None
+            else x
         )
-        return output
+        x = self.mixer(self.norm(x), integration_timesteps)
+
+        return x, residual
 
 
 class MambaBlock(nn.Module):
@@ -230,7 +235,9 @@ class MambaBlock(nn.Module):
 
         # The split_size is converted to the indices_or_sections method, notice the difference!
         if self.args.event_based:
-            assert integration_timesteps is not None, "Integration timesteps must be provided for event-based Mamba."
+            assert (
+                integration_timesteps is not None
+            ), "Integration timesteps must be provided for event-based Mamba."
             (B, C) = jnp.split(
                 x_dbl,
                 indices_or_sections=[n],
@@ -281,30 +288,35 @@ class MambaBlock(nn.Module):
         """
         (l, d_in) = u.shape
         n = A.shape[1]
-        
+
         # Async discretization
         if self.args.event_based:
             identity = jnp.ones(n)
             A_bar = jnp.einsum("1, l 1, d n -> l d n", self.dt_proj, delta, A)
-            B_bar = (1/A)*(jnp.exp(self.dt_proj * A) - identity[None, :])*B[:, None, :]
+            B_bar = (
+                (1 / A)
+                * (jnp.exp(self.dt_proj * A) - identity[None, :])
+                * B[:, None, :]
+            )
             deltaA = jnp.exp(A_bar)
             deltaB_u = jnp.einsum("l d n, l d -> l d n", B_bar, u)
-            
+
         # Discretize continuous parameters (A, B) as in Mamba
         else:
             deltaA = jnp.exp(jnp.einsum("l d, d n -> l d n", delta, A))
             deltaB_u = jnp.einsum("l d, l n, l d -> l d n", delta, B, u)
-        
+
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
         x = jnp.zeros((d_in, n))
+
         def body_fn(x, i):
             x = deltaA[i] * x + deltaB_u[i]
             y = jnp.einsum("d n, n -> d", x, C[i, :])
             return x, y
-        
+
         _, ys = jax.lax.scan(body_fn, x, jnp.arange(l))
         y = jnp.stack(ys, axis=0)
-        
+
         y = y + u * D
 
         return y
