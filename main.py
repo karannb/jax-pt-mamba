@@ -95,7 +95,7 @@ def parse_args():
     )
     parser.add_argument("--drop_out", type=float, default=0.0, help="Dropout rate.")
     parser.add_argument("--drop_path", type=float, default=0.2, help="Drop path rate.")
-    # the original paper also has a drop_path_rate parameter, which is used to initialize
+    # the original code also has a drop_path_rate parameter, which is used to initialize
     # a DropPath block but it is never used.
 
     # PointMamba arguments
@@ -134,7 +134,7 @@ def parse_args():
     parser.add_argument(
         "--run_name",
         default=None,
-        help="Run name. If None, the launching time will be used.",
+        help="Run name. If None, a random uuid name will be used.",
     )
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     parser.add_argument("--epochs", type=int, default=300, help="Number of epochs.")
@@ -146,7 +146,7 @@ def parse_args():
         "--learning_rate", type=float, default=0.0002, help="Learning rate."
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=1e-5, help="Weight decay."
+        "--weight_decay", type=float, default=5e-2, help="Weight decay."
     )
     parser.add_argument(
         "--alpha_for_decay", type=float, default=1e-6, help="Alpha for decay."
@@ -555,14 +555,14 @@ def main():
 
         # compare with best metrics
         if class_avg_iou > metaData["best_class_avg"]:
-            metaData["best_class_avg"] = metaData["best_class_avg"]
+            metaData["best_class_avg"] = class_avg_iou
         if accuracy > metaData["best_accuracy"]:
-            metaData["best_accuracy"] = metaData["best_accuracy"]
+            metaData["best_accuracy"] = accuracy
         if class_avg_accuracy > metaData["best_class_avg_accuracy"]:
-            metaData["best_class_avg_accuracy"] = metaData["best_class_avg_accuracy"]
+            metaData["best_class_avg_accuracy"] = class_avg_accuracy
         if instance_avg_iou > metaData["best_instance_avg"]:
             # save the model
-            metaData["best_instance_avg"] = metaData["best_instance_avg"]
+            metaData["best_instance_avg"] = instance_avg_iou
             best_path = ocp.test_utils.erase_and_create_empty(
                 checkpoint_dir / "best_model"
             )
@@ -584,7 +584,7 @@ def main():
             )
             del new_state
 
-        if epoch % 50 == 0:
+        if (epoch + 1) % 50 == 0:
             # save the model
             to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Saving checkpoint..."
             printAndLog(to_print, logger)

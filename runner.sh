@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 activate_jaxpm
 
-python3 main.py --epochs 50 --with_tracking --run_name async_small_lr --event_based --learning_rate 1e-5
+python3 main.py --epochs 50 --with_tracking --run_name no_weight_decay_pt2 --weight_decay 0.0
