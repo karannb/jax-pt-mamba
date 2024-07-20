@@ -80,9 +80,6 @@ def getModelAndOpt(
     # Get the model
     model, params, batch_stats = getModel(config, num_classes, num_part, verbose)
 
-    # Optimizer
-    opt = str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay)
-
     # Scheduler
     warmup_sched = optax.linear_schedule(
         init_value=alpha, end_value=learning_rate, transition_steps=warmup_steps
@@ -110,13 +107,12 @@ def getModelAndOpt(
         ),
     )
 
-    return model, params, batch_stats, optimizer  # , opt_state
+    return model, params, batch_stats, optimizer
 
 
 class TrainState(train_state.TrainState):
 
     batch_stats: Dict[str, Any]
-    # eval_apply_fn: Callable = struct.field(pytree_node=False)
 
 
 def getTrainState(

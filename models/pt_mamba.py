@@ -465,9 +465,11 @@ class PointMamba(nn.Module):
         center = sortSelectAndConcat(center, inds)
 
         # calculate integration timesteps from the centers
-        ovr_inds = jnp.concatenate(inds, axis=0)
-        timesteps = center[:, 0][ovr_inds]  # get center_x and sort with inds
-        integration_timesteps = jnp.diff(timesteps, axis=0, append=timesteps[-1:])
+        integration_timesteps = None
+        if self.config.mamba_args.event_based:
+            ovr_inds = jnp.concatenate(inds, axis=0)
+            timesteps = center[:, 0][ovr_inds]  # get center_x and sort with inds
+            integration_timesteps = jnp.diff(timesteps, axis=0, append=timesteps[-1:])
 
         # Run the Mamba model
         features_list = self.blocks(

@@ -45,6 +45,7 @@ from typing import Optional
 class MambaArgs:  # The same as torch version since this does not have any torch specific code
     d_model: int
     event_based: bool = False
+    discretize_fn: str = "async"
     norm_eps: float = 1e-5
     rms_norm: bool = False
     d_state: int = 16
@@ -141,7 +142,9 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self.dt_proj = self.param("dt_proj", nn.initializers.ones, (self.args.d_inner,))
+            self.log_dt_proj = jnp.log(
+                self.param("dt_proj", nn.initializers.ones, (self.args.d_inner,))
+            )
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
@@ -289,15 +292,18 @@ class MambaBlock(nn.Module):
         (l, d_in) = u.shape
         n = A.shape[1]
 
-        # Async discretization
+        # Other discretizations
         if self.args.event_based:
-            identity = jnp.ones(n)
-            A_bar = jnp.einsum("l 1, d n -> l d n", delta, A) * self.dt_proj[None, :, None]
-            B_bar = (
-                (1 / A)
-                * (jnp.exp(self.dt_proj[None, :, None] * A) - identity[None, :]) # A_bar
-                * B[:, None, :]
-            )
+            identity = jnp.ones(n)[None, None, :]
+            dt_proj = jnp.exp(self.log_dt_proj)[None, :, None]
+            A_bar = jnp.einsum("l 1, d n -> l d n", delta, A) * dt_proj
+            if self.args.discretize_fn == "async":
+                B_bar = (
+                    (1 / A) * (jnp.exp(dt_proj * A) - identity) * B[:, None, :]
+                )
+            elif self.args.discretize_fn == "hybrid":
+                B_bar = dt_proj * delta * B[:, None, :]
+
             deltaA = jnp.exp(A_bar)
             deltaB_u = jnp.einsum("l d n, l d -> l d n", B_bar, u)
 

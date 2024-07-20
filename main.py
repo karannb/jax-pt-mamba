@@ -63,6 +63,13 @@ def parse_args():
         help="Use event based Mamba.",
     )
     parser.add_argument(
+        "--discretize_fn",
+        default="async",
+        type=str,
+        help="Discretization function. \
+        Only in effect when suing --event_based.",
+    )
+    parser.add_argument(
         "--norm_eps", type=float, default=1e-5, help="Epsilon for normalization."
     )
     parser.add_argument(
