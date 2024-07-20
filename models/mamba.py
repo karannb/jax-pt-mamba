@@ -141,7 +141,7 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self.dt_proj = self.param("dt_proj", nn.initializers.ones, (1,))
+            self.dt_proj = self.param("dt_proj", nn.initializers.ones, (self.args.d_inner,))
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
@@ -292,10 +292,10 @@ class MambaBlock(nn.Module):
         # Async discretization
         if self.args.event_based:
             identity = jnp.ones(n)
-            A_bar = jnp.einsum("1, l 1, d n -> l d n", self.dt_proj, delta, A)
+            A_bar = jnp.einsum("l 1, d n -> l d n", delta, A) * self.dt_proj[None, :, None]
             B_bar = (
                 (1 / A)
-                * (jnp.exp(self.dt_proj * A) - identity[None, :]) # A_bar
+                * (jnp.exp(self.dt_proj[None, :, None] * A) - identity[None, :]) # A_bar
                 * B[:, None, :]
             )
             deltaA = jnp.exp(A_bar)
