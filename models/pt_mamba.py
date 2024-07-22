@@ -340,9 +340,22 @@ class PointMamba(nn.Module):
 
     def setup(self):
 
-        assert (
-            self.config.encoder_channels == self.config.mamba_args.d_model
-        ), f"Encoder channels : {self.config.encoder_channels} and d_model : {self.config.mamba_args.d_model} must be same."
+        # assert (
+        #     self.config.encoder_channels == self.config.mamba_args.d_model
+        # ), f"Encoder channels : {self.config.encoder_channels} and d_model : {self.config.mamba_args.d_model} must be same."
+
+        if self.config.encoder_channels != self.config.mamba_args.d_model:
+            self.config.encoder_channels = max(
+                self.config.encoder_channels, self.config.mamba_args.d_model
+            )
+            self.config.mamba_args.d_model = self.config.encoder_channels
+            print("*" * 50)
+            print("*" * 50)
+            print(
+                f"ENCODER CHANNELS ({self.config.encoder_channels}) AND D_MODEL({self.config.mamba_args.d_model}) ARE NOT SAME, SETTING BOTH TO MAX OF THEM."
+            )
+            print("*" * 50)
+            print("*" * 50)
 
         # Grouper
         self.grouper = Group(
