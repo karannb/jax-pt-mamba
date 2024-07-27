@@ -80,9 +80,6 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: KeyArray) -> jnp.n
 
     def update(state, i):
         centroids, distance, farthest = state
-        c_shape = centroids.shape
-        d_shape = distance.shape
-        f_shape = farthest.shape
 
         # Set a new centroid as the farthest point
         centroids = centroids.at[i].set(farthest)
@@ -98,10 +95,6 @@ def farthest_point_sample(xyz: jnp.ndarray, npoint: int, key: KeyArray) -> jnp.n
 
         # Get the index of the farthest point from each centroid
         farthest = jnp.argmax(distance)
-
-        assert centroids.shape == c_shape
-        assert distance.shape == d_shape
-        assert farthest.shape == f_shape
 
         return (centroids, distance, farthest), None
 
