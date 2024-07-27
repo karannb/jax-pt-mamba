@@ -8,7 +8,7 @@ from jax.lax import expand_dims
 from flax import linen as nn
 
 # other imports
-import numpy as np
+import yaml
 from functools import partial
 from dataclasses import dataclass
 from utils.dropout import Dropout
@@ -43,6 +43,26 @@ class PointMambaArgs:
     encoder_channels: int = 384
     fetch_idx: Tuple[int] = (3, 7, 11)
     leaky_relu_slope: float = 0.2
+
+
+def load_config(file_path: str) -> PointMambaArgs:
+    """
+    Loads the configuration from the given file path.
+    """
+    with open(file_path, "r") as file:
+        config = yaml.safe_load(file)
+
+    mamba_args_dict = config["PointMambaArgs"]["mamba_args"]
+    mamba_args = MambaArgs(**mamba_args_dict)
+
+    point_mamba_args_dict = config["PointMambaArgs"]
+    point_mamba_args_dict["mamba_args"] = mamba_args
+    point_mamba_args_dict["fetch_idx"] = tuple(point_mamba_args_dict["fetch_idx"])
+
+    return PointMambaArgs(**point_mamba_args_dict)
+
+
+default_conf = load_config("cfgs/default.yml")
 
 
 def create_block(
@@ -558,7 +578,10 @@ BatchedPointMamba = nn.vmap(
 
 
 def getModel(
-    config: PointMambaArgs, num_classes: int, num_parts: int, verbose: bool = False
+    config: PointMambaArgs = default_conf,
+    num_classes: int = 16,
+    num_parts: int = 50,
+    verbose: bool = False,
 ) -> Tuple[PointMamba, Dict[str, Any]]:
 
     # Keys for init

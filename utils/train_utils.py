@@ -12,6 +12,7 @@ from jax import numpy as jnp
 from functools import partial
 import orbax.checkpoint as ocp
 from dataclasses import dataclass
+from models.mamba import MambaArgs
 from flax.training import train_state
 from utils.func_utils import customTranspose
 from utils.dist_utils import reshape_batch_per_device
@@ -371,9 +372,12 @@ def out_projInitializer(
     if "out_proj" in params:
         assert layer_num != None, "Layer number not provided by parent calls."
         shape = params["out_proj"]["kernel"].shape
-        # make it kiaming normal
-        updated_params["out_proj"]["kernel"] = (
-            jax.random.normal(key, shape) * (2 / shape[0]) ** 0.5
+        # make it kiaming uniform
+        fan_in = shape[0]
+        gain = math.sqrt(2/(math.sqrt(5)**2 + 1)) # from the paper and PyTorch Docs https://pytorch.org/docs/stable/_modules/torch/nn/init.html#kaiming_uniform_
+        bound = gain * math.sqrt(3.0 / fan_in)
+        updated_params["out_proj"]["kernel"] = random.uniform(
+            key, shape, minval=-bound, maxval=bound
         )
         # take num_residuals in account
         updated_params["out_proj"]["kernel"] /= math.sqrt(

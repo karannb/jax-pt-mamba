@@ -1,0 +1,21 @@
+PointMambaArgs:
+  mamba_depth: 12
+  mamba_args:
+    d_model: 64
+    event_based: false
+    discretize_fn: "async"
+    norm_eps: 1e-5
+    rms_norm: false
+    d_state: 16
+    expand: 2
+    dt_rank: "auto"
+    d_conv: 4
+    conv_bias: true
+    bias: false
+  drop_out: 0.0
+  drop_path: 0.1
+  num_group: 128
+  group_size: 32
+  encoder_channels: 64
+  fetch_idx: [3, 7, 11]
+  leaky_relu_slope: 0.2
