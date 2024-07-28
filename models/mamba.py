@@ -113,7 +113,7 @@ class ResidualBlock(nn.Module):
             if residual is not None
             else x
         )
-        x = self.mixer(self.norm(x), integration_timesteps)
+        x = self.mixer(self.norm(residual), integration_timesteps)
 
         return x, residual
 
@@ -124,7 +124,7 @@ class MambaBlock(nn.Module):
     def setup(self):
         self.in_proj = nn.Dense(
             features=self.args.d_inner * 2,
-            kernel_init=normal(),
+            # kernel_init=normal(),
             use_bias=self.args.bias,
         )
 
@@ -160,7 +160,7 @@ class MambaBlock(nn.Module):
         )
         self.D = self.param("D", nn.initializers.ones, (self.args.d_inner,))
         self.out_proj = nn.Dense(
-            self.args.d_model, kernel_init=normal(), use_bias=self.args.bias
+            self.args.d_model, use_bias=self.args.bias
         )
 
     def __call__(self, x: Array, integration_timesteps: Optional[Array] = None):

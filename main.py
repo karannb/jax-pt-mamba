@@ -67,7 +67,7 @@ def parse_args():
         default="async",
         type=str,
         help="Discretization function. \
-        Only in effect when suing --event_based.",
+        Only in effect when using --event_based.",
     )
     parser.add_argument(
         "--norm_eps", type=float, default=1e-5, help="Epsilon for normalization."
@@ -266,7 +266,7 @@ def main():
         * len(ShapenetPartDataset())
         // training_args.batch_size
     ) - warmup_steps
-    model, params, batch_stats, optimizer = getModelAndOpt(
+    model, params, batch_stats, optimizer1, optimizer2 = getModelAndOpt(
         point_mamba_args,
         16,
         50,
@@ -281,7 +281,7 @@ def main():
 
     # re-initialize the out_proj layer
     updated_params = deepcopy(params)
-    out_projInitializer(updated_params, params, residuals_per_layer=1, layer_num=None)
+    out_projInitializer(updated_params, params, residuals_per_layer=1, layer_num=point_mamba_args.mamba_depth)
     prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
     params = updated_params
     assert not jax.numpy.allclose(
@@ -291,7 +291,7 @@ def main():
     # Initialize the train state
     to_print = "[*] Creating train state..."
     printAndLog(to_print, logger)
-    state = getTrainState(model, params, batch_stats, optimizer)
+    state = getTrainState(model, params, batch_stats, optimizer1, optimizer2)
 
     # create meta state
     metaData = {

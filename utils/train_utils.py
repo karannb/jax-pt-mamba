@@ -12,10 +12,9 @@ from jax import numpy as jnp
 from functools import partial
 import orbax.checkpoint as ocp
 from dataclasses import dataclass
-from models.mamba import MambaArgs
-from flax.training import train_state
 from utils.func_utils import customTranspose
 from utils.dist_utils import reshape_batch_per_device
+from utils.dualOptTrainState import DualOptTrainState
 from typing import Any, Dict, Tuple, Callable, Optional
 from models.pt_mamba import PointMamba, PointMambaArgs, getModel
 
@@ -66,6 +65,20 @@ class TrainingConfig:
     eval_every: int = 10
 
 
+def map_params(fn):  # Convenience function to construct mask_fns
+    def map_fn(params):
+        flat_params = flax.traverse_util.flatten_dict(params)
+        flat_mask = {path: fn(path, flat_params[path]) for path in flat_params.keys()}
+        return flax.traverse_util.unflatten_dict(flat_mask)
+    
+    def inverse_map_fn(params):
+        flat_params = flax.traverse_util.flatten_dict(params)
+        flat_mask = {path: not fn(path, flat_params[path]) for path in flat_params.keys()}
+        return flax.traverse_util.unflatten_dict(flat_mask)
+    
+    return map_fn, inverse_map_fn
+
+
 def getModelAndOpt(
     config: PointMambaArgs,
     num_classes: int,
@@ -95,38 +108,48 @@ def getModelAndOpt(
 
     # Initialize the optimizer and get opt_state
     # keep no weight decay for bias and batch norm params
-    optimizer = optax.chain(
+    no_decay, decay = map_params(lambda path, p: (path[-1] == 'bias' or path[-1] == 'A_log' or path[-1] == 'D' or p.ndim == 1))
+    opt1 = optax.chain(
+        optax.scale_by_schedule(sched),
+        optax.masked(
+            str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay),
+            mask=decay,
+        ),
+        optax.masked(
+            str2opt[opt_name](learning_rate=learning_rate, weight_decay=0.0),
+            mask=no_decay,
+        ),
+    )
+    
+    opt2 = optax.chain(
         optax.clip_by_global_norm(10),
         optax.scale_by_schedule(sched),
         optax.masked(
             str2opt[opt_name](learning_rate=learning_rate, weight_decay=weight_decay),
-            mask=partial(jax.tree_map, lambda p: p.ndim != 1),
+            mask=decay,
         ),
         optax.masked(
             str2opt[opt_name](learning_rate=learning_rate, weight_decay=0.0),
-            mask=partial(jax.tree_map, lambda p: p.ndim == 1),
+            mask=no_decay,
         ),
     )
 
-    return model, params, batch_stats, optimizer
-
-
-class TrainState(train_state.TrainState):
-
-    batch_stats: Dict[str, Any]
+    return model, params, batch_stats, opt1, opt2
 
 
 def getTrainState(
     model: PointMamba,
     params: Dict[str, Any],
     batch_stats: Dict[str, Any],
-    optimizer: optax.GradientTransformation,
-) -> TrainState:
+    optimizer1: optax.GradientTransformation,
+    optimizer2: optax.GradientTransformation,
+) -> DualOptTrainState:
 
-    state = TrainState.create(
+    state = DualOptTrainState.create(
         apply_fn=model.apply,
         params=params,
-        tx=optimizer,
+        tx1=optimizer1,
+        tx2=optimizer2,
         batch_stats=batch_stats,
     )
 
@@ -190,7 +213,7 @@ def prepInputs(
 
 
 def trainStep(
-    state: TrainState,
+    state: DualOptTrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     dist: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -241,7 +264,7 @@ def trainStep(
 
 
 def evalStep(
-    state: TrainState,
+    state: DualOptTrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
 ) -> jnp.ndarray:
 
@@ -305,10 +328,10 @@ def getIOU(
         for part in cat_inds:
             I = np.sum((pred == part) & (target == part))
             U = np.sum((pred == part) | (target == part))
-            if U != 0:
-                part_ious[part - cat_inds[0]] = I / U
-            else:
+            if I == 0 and U == 0:
                 part_ious[part - cat_inds[0]] = 1.0
+            else:
+                part_ious[part - cat_inds[0]] = I / U
         shape_ious[category].append(np.mean(part_ious))
 
     # compute accuracy metrics
@@ -355,7 +378,7 @@ def out_projInitializer(
     params: flax.core.FrozenDict,
     key=jax.random.PRNGKey(0),
     residuals_per_layer=1,
-    layer_num=None,
+    layer_num=12,
 ):
     """
     Reinitialize the out_proj layer to make it kaiming normal, and also be similar to GPT2 init.
@@ -387,20 +410,10 @@ def out_projInitializer(
     elif isinstance(params, dict):
         for param in params.keys():
             use, throw_away = random.split(key)
-            if "layers_" in param:
-                layer_num = int(param.split("_")[-1]) + 1
-                out_projInitializer(
-                    updated_params[param],
-                    params[param],
-                    use,
-                    residuals_per_layer,
-                    layer_num,
-                )
-            else:
-                out_projInitializer(
-                    updated_params[param],
-                    params[param],
-                    use,
-                    residuals_per_layer,
-                    layer_num,
-                )
+            out_projInitializer(
+                updated_params[param],
+                params[param],
+                use,
+                residuals_per_layer,
+                layer_num,
+            )

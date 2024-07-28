@@ -198,7 +198,6 @@ class PointNetFeaturePropagation(nn.Module):
         else:
             new_points = interpolated_points  # [N, D']
 
-        # new_points = customTranspose(new_points) # [N, *]
         for conv, bn in zip(self.convs, self.bns):
             new_points = conv(new_points)
             new_points = bn(new_points, use_running_average=not training)
