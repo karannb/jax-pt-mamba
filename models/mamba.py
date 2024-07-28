@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jax.nn.initializers import normal
+from jax.nn.initializers import normal, ones, zeros
 
 from flax import linen as nn
 
@@ -47,6 +47,11 @@ class MambaArgs:  # The same as torch version since this does not have any torch
     event_based: bool = False
     discretize_fn: str = "async"
     norm_eps: float = 1e-5
+    dt_min=0.001
+    dt_max=0.1
+    dt_init="random"
+    dt_scale=1.0
+    dt_init_floor=1e-4
     rms_norm: bool = False
     d_state: int = 16
     expand: int = 2
@@ -124,8 +129,8 @@ class MambaBlock(nn.Module):
     def setup(self):
         self.in_proj = nn.Dense(
             features=self.args.d_inner * 2,
-            # kernel_init=normal(),
             use_bias=self.args.bias,
+            bias_init=zeros,
         )
 
         # Adjusted for Flax. Flax does not have nn.Conv1d, so you might need to reshape or use a different approach
@@ -135,6 +140,7 @@ class MambaBlock(nn.Module):
             feature_group_count=self.args.d_inner,
             padding=self.args.d_conv - 1,
             use_bias=self.args.conv_bias,
+            bias_init=zeros,
         )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
@@ -143,14 +149,41 @@ class MambaBlock(nn.Module):
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
             self.log_dt_proj = jnp.log(
-                self.param("dt_proj", nn.initializers.ones, (self.args.d_inner,))
+                self.param("dt_proj", ones, (self.args.d_inner,))
             )
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2, use_bias=False
             )
+            
+            # Initialize special dt projection to preserve variance at initialization
+            dt_init_std = self.args.dt_rank**-0.5 * self.args.dt_scale
+            if self.args.dt_init == "constant":
+                dt_kernel_init_fn = lambda rng, shape: jnp.ones(shape) * dt_init_std
+            elif self.args.dt_init == "random":
+                dt_kernel_init_fn = normal(stddev=dt_init_std)
+            else:
+                raise NotImplementedError
+            
+            def bias_init_fn(rng, shape):
+                '''
+                Custom initialization for bias term in dt projection layer.
+                As in the Mamba implementation.
+                '''
+                # Initialize dt bias so that F.softplus(dt_bias) is between dt_min and dt_max
+                dt = jnp.exp(
+                    jax.random.uniform(rng, shape, minval=0, maxval=1) * (math.log(self.args.dt_max) - math.log(self.args.dt_min))
+                )
+                dt = dt.clip(min=self.args.dt_init_floor)
+                # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
+                inv_dt = dt + jnp.log(-jnp.expm1(-dt))
+                
+                return inv_dt
+            
             # dt_proj projects Δ from dt_rank to d_in
-            self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True)
+            self.dt_proj = nn.Dense(self.args.d_inner, use_bias=True,
+                                    kernel_init=dt_kernel_init_fn,
+                                    bias_init=bias_init_fn)
 
         A = jnp.tile(jnp.arange(1, self.args.d_state + 1), (self.args.d_inner, 1))
         self.A_log = self.param(
@@ -158,9 +191,9 @@ class MambaBlock(nn.Module):
             lambda rng, shape: jnp.log(A),
             (self.args.d_inner, self.args.d_state),
         )
-        self.D = self.param("D", nn.initializers.ones, (self.args.d_inner,))
+        self.D = self.param("D", ones, (self.args.d_inner,))
         self.out_proj = nn.Dense(
-            self.args.d_model, use_bias=self.args.bias
+            self.args.d_model, use_bias=self.args.bias, bias_init=zeros
         )
 
     def __call__(self, x: Array, integration_timesteps: Optional[Array] = None):
