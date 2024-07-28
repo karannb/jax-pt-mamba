@@ -174,6 +174,7 @@ class MambaBlock(nn.Module):
                 dt = jnp.exp(
                     jax.random.uniform(rng, shape, minval=0, maxval=1)
                     * (math.log(self.args.dt_max) - math.log(self.args.dt_min))
+                    + math.log(self.args.dt_min)
                 )
                 dt = dt.clip(min=self.args.dt_init_floor)
 

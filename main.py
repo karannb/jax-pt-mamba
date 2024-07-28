@@ -260,12 +260,17 @@ def main():
     # Create model, optimizer, scheduler and opt_state
     to_print = "[*] Creating model, optimizer, scheduler and opt_state..."
     printAndLog(to_print, logger)
-    warmup_steps = 10 * len(ShapenetPartDataset()) // training_args.batch_size
+    warmup_steps = 9 * len(ShapenetPartDataset()) // training_args.batch_size
+    const_steps = 1 * len(ShapenetPartDataset()) // training_args.batch_size
     decay_steps = (
-        training_args.num_epochs
-        * len(ShapenetPartDataset())
-        // training_args.batch_size
-    ) - warmup_steps
+        (
+            training_args.num_epochs
+            * len(ShapenetPartDataset())
+            // training_args.batch_size
+        )
+        - warmup_steps
+        - const_steps
+    )
     model, params, batch_stats, optimizer1, optimizer2 = getModelAndOpt(
         point_mamba_args,
         16,
@@ -276,12 +281,18 @@ def main():
         training_args.weight_decay,
         decay_steps=decay_steps,
         warmup_steps=warmup_steps,
+        const_steps=const_steps,
         alpha=training_args.alpha_for_decay,
     )
 
     # re-initialize the out_proj layer
     updated_params = deepcopy(params)
-    out_projInitializer(updated_params, params, residuals_per_layer=1, layer_num=point_mamba_args.mamba_depth)
+    out_projInitializer(
+        updated_params,
+        params,
+        residuals_per_layer=1,
+        layer_num=point_mamba_args.mamba_depth,
+    )
     prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
     params = updated_params
     assert not jax.numpy.allclose(

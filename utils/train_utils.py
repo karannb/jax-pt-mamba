@@ -70,12 +70,14 @@ def map_params(fn):  # Convenience function to construct mask_fns
         flat_params = flax.traverse_util.flatten_dict(params)
         flat_mask = {path: fn(path, flat_params[path]) for path in flat_params.keys()}
         return flax.traverse_util.unflatten_dict(flat_mask)
-    
+
     def inverse_map_fn(params):
         flat_params = flax.traverse_util.flatten_dict(params)
-        flat_mask = {path: not fn(path, flat_params[path]) for path in flat_params.keys()}
+        flat_mask = {
+            path: not fn(path, flat_params[path]) for path in flat_params.keys()
+        }
         return flax.traverse_util.unflatten_dict(flat_mask)
-    
+
     return map_fn, inverse_map_fn
 
 
@@ -89,6 +91,7 @@ def getModelAndOpt(
     weight_decay: float = 5e-2,
     decay_steps: int = 1000,
     warmup_steps: int = 100,
+    const_steps: int = 100,
     alpha: float = 0.0,
 ) -> Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation]:
     # Get the model
@@ -96,19 +99,24 @@ def getModelAndOpt(
 
     # Scheduler
     warmup_sched = optax.linear_schedule(
-        init_value=alpha, end_value=learning_rate, transition_steps=warmup_steps
+        init_value=alpha, end_value=(0.9) * learning_rate, transition_steps=warmup_steps
     )
+    constant_sched = optax.constant_schedule((0.9) * learning_rate)
     cosine_sched = optax.cosine_decay_schedule(
-        init_value=learning_rate, decay_steps=decay_steps, alpha=alpha
+        init_value=(0.9) * learning_rate, decay_steps=decay_steps, alpha=alpha
     )
-    boundaries = [warmup_steps]
+    boundaries = [warmup_steps, warmup_steps + const_steps]
     sched = optax.join_schedules(
-        schedules=[warmup_sched, cosine_sched], boundaries=boundaries
+        schedules=[warmup_sched, constant_sched, cosine_sched], boundaries=boundaries
     )
 
     # Initialize the optimizer and get opt_state
     # keep no weight decay for bias and batch norm params
-    no_decay, decay = map_params(lambda path, p: (path[-1] == 'bias' or path[-1] == 'A_log' or path[-1] == 'D' or p.ndim == 1))
+    no_decay, decay = map_params(
+        lambda path, p: (
+            path[-1] == "bias" or path[-1] == "A_log" or path[-1] == "D" or p.ndim == 1
+        )
+    )
     opt1 = optax.chain(
         optax.scale_by_schedule(sched),
         optax.masked(
@@ -120,7 +128,7 @@ def getModelAndOpt(
             mask=no_decay,
         ),
     )
-    
+
     opt2 = optax.chain(
         optax.clip_by_global_norm(10),
         optax.scale_by_schedule(sched),
@@ -397,7 +405,9 @@ def out_projInitializer(
         shape = params["out_proj"]["kernel"].shape
         # make it kiaming uniform
         fan_in = shape[0]
-        gain = math.sqrt(2/(math.sqrt(5)**2 + 1)) # from the paper and PyTorch Docs https://pytorch.org/docs/stable/_modules/torch/nn/init.html#kaiming_uniform_
+        gain = math.sqrt(
+            2 / (math.sqrt(5) ** 2 + 1)
+        )  # from the paper and PyTorch Docs https://pytorch.org/docs/stable/_modules/torch/nn/init.html#kaiming_uniform_
         bound = gain * math.sqrt(3.0 / fan_in)
         updated_params["out_proj"]["kernel"] = random.uniform(
             key, shape, minval=-bound, maxval=bound
