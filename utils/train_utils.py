@@ -3,13 +3,11 @@ from os.path import join
 import jax
 import uuid
 import flax
-import math
 import optax
 import numpy as np
 from jax import random
 from jax._src import prng
 from jax import numpy as jnp
-from functools import partial
 import orbax.checkpoint as ocp
 from dataclasses import dataclass
 from utils.func_utils import customTranspose
@@ -379,51 +377,3 @@ def setupDirs(log_dir: str = "ckpts", run_name: Optional[str] = None):
     checkpoint_dir = ocp.test_utils.erase_and_create_empty(checkpoint_dir)
 
     return log_file, config_file, checkpoint_dir
-
-
-def out_projInitializer(
-    updated_params: flax.core.FrozenDict,
-    params: flax.core.FrozenDict,
-    key=jax.random.PRNGKey(0),
-    residuals_per_layer=1,
-    layer_num=12,
-):
-    """
-    Reinitialize the out_proj layer to make it kaiming normal, and also be similar to GPT2 init.
-    This is from Mamba's code base.
-    Does not return anything, but updates the updated_params in place.
-    Ideal usage would be by creating an updated params as :
-    ```
-    from copy import deepcopy
-    updated_params = deepcopy(params)
-    ```
-    If using an MLP, set residuals_per_layer to 2.
-    """
-
-    if "out_proj" in params:
-        assert layer_num != None, "Layer number not provided by parent calls."
-        shape = params["out_proj"]["kernel"].shape
-        # make it kiaming uniform
-        fan_in = shape[0]
-        gain = math.sqrt(
-            2 / (math.sqrt(5) ** 2 + 1)
-        )  # from the paper and PyTorch Docs https://pytorch.org/docs/stable/_modules/torch/nn/init.html#kaiming_uniform_
-        bound = gain * math.sqrt(3.0 / fan_in)
-        updated_params["out_proj"]["kernel"] = random.uniform(
-            key, shape, minval=-bound, maxval=bound
-        )
-        # take num_residuals in account
-        updated_params["out_proj"]["kernel"] /= math.sqrt(
-            residuals_per_layer * layer_num
-        )
-
-    elif isinstance(params, dict):
-        for param in params.keys():
-            use, throw_away = random.split(key)
-            out_projInitializer(
-                updated_params[param],
-                params[param],
-                use,
-                residuals_per_layer,
-                layer_num,
-            )

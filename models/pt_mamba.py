@@ -45,7 +45,7 @@ class PointMambaArgs:
     leaky_relu_slope: float = 0.2
 
 
-def load_config(file_path: str) -> PointMambaArgs:
+def _load_config(file_path: str) -> PointMambaArgs:
     """
     Loads the configuration from the given file path.
     """
@@ -62,7 +62,7 @@ def load_config(file_path: str) -> PointMambaArgs:
     return PointMambaArgs(**point_mamba_args_dict)
 
 
-default_conf = load_config("cfgs/default.yml")
+default_conf = _load_config("cfgs/default.yml")
 
 
 def create_block(
@@ -360,15 +360,7 @@ class PointMamba(nn.Module):
 
     def setup(self):
 
-        # assert (
-        #     self.config.encoder_channels == self.config.mamba_args.d_model
-        # ), f"Encoder channels : {self.config.encoder_channels} and d_model : {self.config.mamba_args.d_model} must be same."
-
         if self.config.encoder_channels != self.config.mamba_args.d_model:
-            self.config.encoder_channels = max(
-                self.config.encoder_channels, self.config.mamba_args.d_model
-            )
-            self.config.mamba_args.d_model = self.config.encoder_channels
             print("*" * 50)
             print("*" * 50)
             print(
@@ -376,6 +368,10 @@ class PointMamba(nn.Module):
             )
             print("*" * 50)
             print("*" * 50)
+            self.config.encoder_channels = max(
+                self.config.encoder_channels, self.config.mamba_args.d_model
+            )
+            self.config.mamba_args.d_model = self.config.encoder_channels
 
         # Grouper
         self.grouper = Group(

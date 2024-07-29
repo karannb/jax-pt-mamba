@@ -130,7 +130,6 @@ class MambaBlock(nn.Module):
         self.in_proj = nn.Dense(
             features=self.args.d_inner * 2,
             use_bias=self.args.bias,
-            bias_init=zeros,
         )
 
         # Adjusted for Flax. Flax does not have nn.Conv1d, so you might need to reshape or use a different approach
@@ -140,7 +139,6 @@ class MambaBlock(nn.Module):
             feature_group_count=self.args.d_inner,
             padding=self.args.d_conv - 1,
             use_bias=self.args.conv_bias,
-            bias_init=zeros,
         )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
@@ -153,7 +151,8 @@ class MambaBlock(nn.Module):
             )
         else:
             self.x_proj = nn.Dense(
-                self.args.dt_rank + self.args.d_state * 2, use_bias=False
+                self.args.dt_rank + self.args.d_state * 2,
+                use_bias=False,
             )
 
             # Initialize special dt projection to preserve variance at initialization
@@ -201,8 +200,10 @@ class MambaBlock(nn.Module):
             (self.args.d_inner, self.args.d_state),
         )
         self.D = self.param("D", ones, (self.args.d_inner,))
+
         self.out_proj = nn.Dense(
-            self.args.d_model, use_bias=self.args.bias, bias_init=zeros
+            self.args.d_model,
+            use_bias=self.args.bias,
         )
 
     def __call__(self, x: Array, integration_timesteps: Optional[Array] = None):

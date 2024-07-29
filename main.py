@@ -22,6 +22,8 @@ from argparse import ArgumentParser
 from models.mamba import MambaArgs
 from models.pt_mamba import PointMambaArgs
 from dataset import ShapenetPartDataset, JAXDataLoader
+
+from utils.init_utils import initParams
 from utils.augment_utils import (
     batched_random_scale_point_cloud,
     batched_shift_point_cloud,
@@ -30,7 +32,6 @@ from utils.augment_utils import (
 )
 from utils.train_utils import (
     TrainingConfig,
-    out_projInitializer,
     getModelAndOpt,
     getTrainState,
     prepInputs,
@@ -260,14 +261,11 @@ def main():
     # Create model, optimizer, scheduler and opt_state
     to_print = "[*] Creating model, optimizer, scheduler and opt_state..."
     printAndLog(to_print, logger)
-    warmup_steps = 9 * len(ShapenetPartDataset()) // training_args.batch_size
-    const_steps = 1 * len(ShapenetPartDataset()) // training_args.batch_size
+    total_len = len(ShapenetPartDataset())
+    warmup_steps = 9 * total_len // training_args.batch_size
+    const_steps = 1 * total_len // training_args.batch_size
     decay_steps = (
-        (
-            training_args.num_epochs
-            * len(ShapenetPartDataset())
-            // training_args.batch_size
-        )
+        (training_args.num_epochs * total_len // training_args.batch_size)
         - warmup_steps
         - const_steps
     )
@@ -286,12 +284,13 @@ def main():
     )
 
     # re-initialize the out_proj layer
-    updated_params = deepcopy(params)
-    out_projInitializer(
-        updated_params,
+    updated_params = initParams(
         params,
-        residuals_per_layer=1,
-        layer_num=point_mamba_args.mamba_depth,
+        model.config.mamba_args.d_conv,
+        1,
+        model.config.mamba_depth,
+        1,
+        random.PRNGKey(0),
     )
     prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
     params = updated_params
