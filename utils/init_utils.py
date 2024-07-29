@@ -41,7 +41,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
                     rand_key, used_key = random.split(rand_key)
                     # sqrt(1/in_feat)
                     # https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
-                    value = 1 / math.sqrt(shape[1])
+                    value = 1 / math.sqrt(shape[0])
                     param = random.uniform(used_key, shape, minval=-value, maxval=value)
                     flat_params[name] = param.astype(param.dtype)
                     
@@ -52,7 +52,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
             
             print(f"Skipping {name}")
         
-        elif name[0] == "encoder" or name[0] == "propagation_0" or "post_layers" in name[0] or "label_conv" in name[0]: # Encoder and final PointNet layers are only convs
+        elif name[0] == "encoder" or name[0] == "propagation_0" or "post_layers" in name[0] or "label_conv" in name[0]:
             
             if 'kernel' in name:
                 shape = param.shape
@@ -87,7 +87,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
                 rand_key, used_key = random.split(rand_key)
                 # sqrt(1/in_feat)
                 # https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
-                value = 1 / math.sqrt(shape[1])
+                value = 1 / math.sqrt(shape[0])
                 param = random.uniform(used_key, shape, minval=-value, maxval=value)
                 flat_params[name] = param.astype(param.dtype)
                 
