@@ -146,9 +146,10 @@ class MambaBlock(nn.Module):
             # in this case, only B and C are generated from this linear layer
             self.x_proj = nn.Dense(self.args.d_state * 2, use_bias=False)
             # dt has a separate projection which operates on time-diffs
-            self.log_dt_proj = jnp.log(
-                self.param("dt_proj", ones, (self.args.d_inner,))
-            )
+            dt_proj_init_fn = lambda rng, shape: jax.random.uniform(rng, shape, minval=0, maxval=1) * (math.log(self.args.dt_max) - math.log(self.args.dt_min)) + math.log(self.args.dt_min)
+            self.log_dt_proj = self.param("log_dt_proj", 
+                                          dt_proj_init_fn,
+                                          (self.args.d_inner,))
         else:
             self.x_proj = nn.Dense(
                 self.args.dt_rank + self.args.d_state * 2,

@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 activate_jaxpm
 
-python3 main.py --epochs 50  --d_model 64 --with_tracking --run_name major_fixes
+python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name hybrid_new --event_based --discretize_fn hybrid
