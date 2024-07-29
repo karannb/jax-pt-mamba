@@ -284,6 +284,7 @@ def main():
     )
 
     # re-initialize the out_proj layer
+    prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
     updated_params = initParams(
         params,
         model.config.mamba_args.d_conv,
@@ -292,7 +293,6 @@ def main():
         1,
         random.PRNGKey(0),
     )
-    prev_0_out_proj = params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"]
     params = updated_params
     assert not jax.numpy.allclose(
         params["blocks"]["layers_0"]["mixer"]["out_proj"]["kernel"], prev_0_out_proj
