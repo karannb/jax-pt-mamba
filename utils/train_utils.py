@@ -244,7 +244,7 @@ def trainStep(
             mutable=["batch_stats"],
         )
 
-        loss = jnp.sum(
+        loss = jnp.mean(
             optax.softmax_cross_entropy_with_integer_labels(
                 logits=logits, labels=targets
             )
@@ -259,7 +259,7 @@ def trainStep(
 
     # Average the loss and the gradients
     if dist:
-        grads = jax.lax.psum(grads, axis_name="device")
+        grads = jax.lax.pmean(grads, axis_name="device")
 
     # apply the gradients
     state = state.apply_gradients(grads=grads)
@@ -293,7 +293,7 @@ def evalStep(
     )
 
     # also return the loss
-    loss = jnp.sum(
+    loss = jnp.mean(
         optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=seg)
     )
 

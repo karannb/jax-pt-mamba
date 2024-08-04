@@ -452,7 +452,7 @@ def main():
             if dist:
                 logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
                 seg = seg.reshape(-1, seg.shape[-1])
-                loss = jnp.sum(loss)
+                loss = jnp.mean(loss)
 
             # Log stuff
             train_loss += loss
@@ -535,7 +535,7 @@ def main():
             if dist:
                 logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
                 seg = seg.reshape(-1, seg.shape[-1])
-                cur_loss = jnp.sum(loss)
+                cur_loss = jnp.mean(loss)
 
             eval_loss += cur_loss
             ovr_preds.append(np.array(logits))

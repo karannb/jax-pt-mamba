@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jax.nn.initializers import normal, ones, zeros
+from jax.nn.initializers import normal, ones
 
 from flax import linen as nn
 

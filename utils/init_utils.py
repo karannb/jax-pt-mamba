@@ -9,6 +9,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
     for name, param in flat_params.items():
         
         if name[0] == "blocks" and "mixer" in name: # Mamba block w/o norm stuff
+            # has convs only but biases become 0.
             if 'bias' in name and 'dt_proj' not in name:
                 flat_params[name] = jax.numpy.zeros_like(param)
 
@@ -18,7 +19,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
                     rand_key, used_key = random.split(rand_key)
                     # make it kaiming uniform
                     fan_in = shape[0]
-                    gain = math.sqrt(2 / (math.sqrt(5) ** 2 + 1))  
+                    gain = math.sqrt(2 / (math.sqrt(5) ** 2 + 1))
                     # from the paper's implementation,
                     # PyTorch Docs https://pytorch.org/docs/stable/_modules/torch/nn/init.html#kaiming_uniform_
                     value = gain * math.sqrt(3.0 / fan_in)
@@ -53,6 +54,7 @@ def initParams(params, inner_group_size, outer_group_size, n_layer, residuals_pe
             print(f"Skipping {name}")
         
         elif name[0] == "encoder" or name[0] == "propagation_0" or "post_layers" in name[0] or "label_conv" in name[0]:
+            # all use convs
             
             if 'kernel' in name:
                 shape = param.shape

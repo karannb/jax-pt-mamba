@@ -141,7 +141,6 @@ class ShapenetPartDataset(Dataset):
             "Skateboard": [44, 45, 46],
             "Table": [47, 48, 49],
         }
-        self.identity = np.eye(50)
 
     def __getitem__(self, index):
         # object is cached in memory
