@@ -5,9 +5,9 @@
 #SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=08:00:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --hint=multithread
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 activate_jaxpm
 
-python3 main.py --epochs 400 --d_model 384 --with_tracking --run_name hybrid_big --event_based --discretize_fn hybrid
+python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name normal_meanedv3

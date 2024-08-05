@@ -377,7 +377,7 @@ def main():
     test_dataset = ShapenetPartDataset(
         num_points=training_args.num_points, split="test", normal_channel=False
     )
-    test_bs = training_args.batch_size // 2
+    test_bs = training_args.batch_size
     to_print = f"Using batch size: {test_bs}, per device: {int(test_bs/num_devices)}"
     printAndLog(to_print, logger)
     test_dataloader = JAXDataLoader(
@@ -418,7 +418,7 @@ def main():
     for epoch in range(init_epoch, training_args.num_epochs):
 
         # Training
-        train_loss = 0.0
+        train_losses = []
         ovr_preds = []
         ovr_labels = []
         to_print = f"{'*'*89}\n[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Starting epoch {epoch}...\n{'*'*89}"
@@ -452,10 +452,10 @@ def main():
             if dist:
                 logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
                 seg = seg.reshape(-1, seg.shape[-1])
-                loss = jnp.mean(loss)
+                loss = jnp.sum(loss)
 
             # Log stuff
-            train_loss += loss
+            train_losses += [loss]
             ovr_preds.append(np.array(logits))
             ovr_labels.append(np.array(seg))
 
@@ -464,12 +464,12 @@ def main():
         if training_args.with_tracking:
             wandb.log(
                 {
-                    "train_loss": train_loss / len(trainval_dataset),
+                    "train_loss": sum(train_losses)/len(train_losses),
                     "train_time": end - start,
                 },
                 step=epoch,
             )
-        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Loss: {train_loss/len(trainval_dataset):.4f}, Took {end-start:.2f}s"
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Train Loss: {sum(train_losses)/len(train_losses):.4f}, Took {end-start:.2f}s"
         printAndLog(to_print, logger)
 
         # Evaluate further metrics every eval_every epochs
@@ -502,7 +502,7 @@ def main():
                 )
 
         # Evaluation
-        eval_loss = 0.0
+        eval_losses = []
         ovr_preds = []
         ovr_labels = []
         to_print = f"{'*'*89}\n[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Starting evaluation for epoch {epoch}...\n{'*'*89}"
@@ -535,14 +535,14 @@ def main():
             if dist:
                 logits = logits.reshape(-1, logits.shape[-2], logits.shape[-1])
                 seg = seg.reshape(-1, seg.shape[-1])
-                cur_loss = jnp.mean(loss)
+                cur_loss = jnp.sum(loss)
 
-            eval_loss += cur_loss
+            eval_losses += [cur_loss]
             ovr_preds.append(np.array(logits))
             ovr_labels.append(np.array(seg))
 
         end = time()
-        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Loss: {eval_loss/len(test_dataset):.4f}, Took {end-start:.2f}s"
+        to_print = f"[{time_.strftime('%Y-%m-%d_%H-%M-%S')}] Epoch: {epoch} - Eval Loss: {sum(eval_losses)/len(eval_losses):.4f}, Took {end-start:.2f}s"
         printAndLog(to_print, logger)
         # get metrics
         accuracy, class_avg_accuracy, class_avg_iou, instance_avg_iou, shape_ious = (
@@ -560,7 +560,7 @@ def main():
         if training_args.with_tracking:
             wandb.log(
                 {
-                    "eval_loss": eval_loss / len(test_dataset),
+                    "eval_loss": sum(eval_losses)/len(eval_losses),
                     "eval_time": end - start,
                     "eval_instance_avg": instance_avg_iou,
                     "eval_class_avg": class_avg_iou,

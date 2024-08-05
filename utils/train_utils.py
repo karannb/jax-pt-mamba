@@ -259,7 +259,7 @@ def trainStep(
 
     # Average the loss and the gradients
     if dist:
-        grads = jax.lax.pmean(grads, axis_name="device")
+        grads = jax.lax.psum(grads, axis_name="device")
 
     # apply the gradients
     state = state.apply_gradients(grads=grads)
