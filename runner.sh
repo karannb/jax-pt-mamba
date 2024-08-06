@@ -5,7 +5,7 @@
 #SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=03:00:00
+#SBATCH --time=02:20:00
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --hint=multithread
@@ -17,4 +17,4 @@ source ~/.bash_profile
 load_v1
 activate_jaxpm
 
-python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name normal_meanedv3
+python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name droppath_fix

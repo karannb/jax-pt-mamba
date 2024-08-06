@@ -191,30 +191,6 @@ def sortSelectAndConcat(
     return jnp.concatenate(ovr_features, axis=ind_axis)
 
 
-def drop_path(
-    x: Array, drop_prob: float = 0.0, key: KeyArray = None, training: bool = False
-) -> Array:
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
-
-    This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
-    the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
-    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
-    changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
-    'survival rate' as the argument.
-
-    Minimal reproduction in Jax of the original function used as
-    `from timm.models.layers import DropPath`
-    """
-    if drop_prob == 0.0 or not training:
-        return x
-    keep_prob = 1 - drop_prob
-    shape = (1,) * (x.ndim)
-    random_tensor = keep_prob + random.uniform(key, shape, dtype=x.dtype)
-    random_tensor = jnp.floor(random_tensor)  # binarize
-    output = jnp.divide(x, keep_prob) * random_tensor
-    return output
-
-
 class DropPathV2(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
 
@@ -228,6 +204,16 @@ class DropPathV2(nn.Module):
     def __call__(self, x: Array, drop_key: KeyArray, training: bool = False) -> Array:
         """
         NOTE: this function drops along the batch dimension.
+        Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+
+        This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
+        the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
+        See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
+        changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
+        'survival rate' as the argument.
+
+        Minimal reproduction in Jax of the original function used as
+        `from timm.models.layers import DropPath`
 
         Args
         ----
@@ -257,11 +243,17 @@ class DropPathV2(nn.Module):
         # dropPath_key = self.make_rng(completely_random_key[0])
         # DOESN'T WORK!
         # Solution: make a batched key object at the start and keep passing it.
-
+            
         if self.drop_prob > 0.0 and drop_key is None:
             raise ValueError("DropPathV2 requires a PRNGKey to be passed.")
-
-        return drop_path(x=x, drop_prob=self.drop_prob, key=drop_key, training=training)
+        
+        if self.drop_prob == 0.0 or not training:
+            return x
+        
+        else:
+            keep_prob = 1 - self.drop_prob
+            drop = random.uniform(drop_key, (1,), dtype=x.dtype) > keep_prob
+            return jnp.where(drop, jnp.zeros_like(x), x / keep_prob)
 
 
 class Identity(nn.Module):
