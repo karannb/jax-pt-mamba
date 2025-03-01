@@ -1,7 +1,6 @@
 import os
 import json
 import numpy as np
-from time import time
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -28,6 +27,16 @@ class ShapenetPartDataset(Dataset):
     def __init__(
         self, split="trainval", class_choice=None, normal_channel=False, num_points=2048
     ):
+        """
+        Instantiate the ShapeNetPart dataset.
+        This will also cache the dataset in memory (80000 items).
+
+        Args:
+            split (str, optional): Dataset split, one of 'trainval', 'train', 'val', 'test'. Defaults to 'trainval'.
+            class_choice (list, optional): List of classes to include. Defaults to None.
+            normal_channel (bool, optional): Whether to include normal channels. Defaults to False.
+            num_points (int, optional): Number of points to sample. Defaults to 2048.
+        """
         self.root = os.path.join(
             os.environ.get("SCRATCH"),
             "shapenetcore_partanno_segmentation_benchmark_v0_normal",
@@ -188,10 +197,7 @@ def numpy_collate_fn(batch):
     tokens = np.array(points)
     targets = np.array(segmentation_labels)
 
-    # timesteps = tokens[:, :, 0]
-    # timesteps = np.diff(timesteps, axis=1, append=timesteps[:, -1:])
-    
-    return tokens, object_labels, targets  #, lengths
+    return tokens, object_labels, targets
 
 
 class JAXDataLoader(DataLoader):
@@ -208,6 +214,9 @@ class JAXDataLoader(DataLoader):
         timeout=0,
         worker_init_fn=None,
     ):
+        """
+        Basic wrapper around the PyTorch DataLoader class to use numpy_collate_fn.
+        """
         super().__init__(
             dataset=dataset,
             batch_size=batch_size,
@@ -221,26 +230,3 @@ class JAXDataLoader(DataLoader):
             timeout=timeout,
             worker_init_fn=worker_init_fn,
         )
-
-
-# Main function
-def main():
-    # train_loader, _, _ = dataloader_generator(seed=0)
-    train_data = ShapenetPartDataset()
-    train_loader = JAXDataLoader(train_data, batch_size=4, shuffle=True)
-
-    n = len(train_loader)
-    iterator = iter(train_loader)
-    item = next(iterator)
-    print(item[2].shape)
-    # end = None
-    # for i in range(n):
-    #     start = time()
-    #     batch = next(iterator)
-    #     if end != None:
-    #         print(f"Time taken for batch {i+1}: {start - end:.4f} seconds")
-    #     end = time()
-
-
-if __name__ == "__main__":
-    main()
