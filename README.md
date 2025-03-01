@@ -7,7 +7,7 @@ You can use the `runner.sh` file, or run it using
 python3 main.py --epochs 50 --d_model 64 --with_tracking
 ```
 
-Similar to the original repository, please check [USAGE.md](USAGE.md) and [README.md](README.md) for more details.
+Similar to the original repository, please check [USAGE.md](USAGE.md) and [DATASET.md](DATASET.md) for more details.
 
 This project went ahead with a PyTorch version and in a different direction, the code will be out soon, so this is basically a side project :P.
 I had a lot of fun messing around with so much of JAX / Flax.
