@@ -38,7 +38,7 @@ class ShapenetPartDataset(Dataset):
             num_points (int, optional): Number of points to sample. Defaults to 2048.
         """
         self.root = os.path.join(
-            os.environ.get("SCRATCH"),
+            "data", # Modify as needed
             "shapenetcore_partanno_segmentation_benchmark_v0_normal",
         )
         self.split = split

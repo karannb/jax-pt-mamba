@@ -362,7 +362,7 @@ class MambaBlock(nn.Module):
             y = jnp.einsum("d n, n -> d", x, C[i, :])
             return x, y
 
-        _, ys = jax.lax.scan(body_fn, x, jnp.arange(l))
+        _, ys = jax.lax.scan(body_fn, x, jnp.arange(l)) # super slow! even with associative_scan, we switched to torch.
         y = jnp.stack(ys, axis=0)
 
         y = y + u * D

@@ -1,3 +1,8 @@
+"""
+Pretty much copied from
+https://github.com/karannb/PointMamba/blob/main/part_segmentation/logger.py
+"""
+
 import logging
 
 import flax.linen as nn

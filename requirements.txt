@@ -1,3 +1,6 @@
+jax
+flax
+optax
 argparse
 easydict
 h5py

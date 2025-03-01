@@ -63,7 +63,13 @@ class TrainingConfig:
     eval_every: int = 10
 
 
-def map_params(fn):  # Convenience function to construct mask_fns
+def map_params(fn): 
+    """
+    Convenience function to construct mask_fns,
+    there are some parameters that do not need to be re-initialized or
+    re-initialized in a specific way, this function allows for that.
+    """
+
     def map_fn(params):
         flat_params = flax.traverse_util.flatten_dict(params)
         flat_mask = {path: fn(path, flat_params[path]) for path in flat_params.keys()}
@@ -92,6 +98,27 @@ def getModelAndOpt(
     const_steps: int = 100,
     alpha: float = 0.0,
 ) -> Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation]:
+    """
+    Creates the model and the optimizers
+    NOTE: Importantly, if you analyze the code from PointMamba, they perform 2 steps per iteration,
+    probably a bug, but I wanted to reproduce the results as is, one of them also clips the gradients.
+
+    Args:
+        config: PointMambaArgs, configuration for the model
+        num_classes: int, number of classes
+        num_part: int, number of parts
+        verbose: bool, print the model summary
+        opt_name: str, optimizer name
+        learning_rate: float, learning rate
+        weight_decay: float, weight decay
+        decay_steps: int, decay steps for cosine decay
+        warmup_steps: int, warmup steps for linear schedule
+        const_steps: int, constant steps for constant schedule
+        alpha: float, alpha for cosine decay
+
+    Returns:
+        Tuple[PointMamba, Dict[str, Any], Dict[str, Any], optax.GradientTransformation] : model, params, batch_stats, optimizer
+    """
     # Get the model
     model, params, batch_stats = getModel(config, num_classes, num_part, verbose)
 
@@ -150,6 +177,9 @@ def getTrainState(
     optimizer1: optax.GradientTransformation,
     optimizer2: optax.GradientTransformation,
 ) -> DualOptTrainState:
+    """
+    Get the full state for training
+    """
 
     state = DualOptTrainState.create(
         apply_fn=model.apply,
@@ -178,6 +208,29 @@ def prepInputs(
     training=True,
     dist=False,
 ):
+    """
+    Wrapper function to prepare inputs for training and evaluation,
+    requires several keys to simulate stateful random operations.
+
+    Args:
+        pts: jnp.ndarray, shape=(batch_size, num_points, 3)
+        cls_label: jnp.ndarray, shape=(batch_size,)
+        seg: jnp.ndarray, shape=(batch_size, num_points)
+        fps_key: jnp.ndarray, shape=(2,)
+        dropout_key: jnp.ndarray, shape=(2,)
+        droppath_key: jnp.ndarray, shape=(2,)
+        shift_key: jnp.ndarray, shape=(2,)
+        scale_key: jnp.ndarray, shape=(2,)
+        bs: int, batch size
+        num_devices: int, number of devices
+        shifter: Callable, shift the point cloud
+        scaler: Callable, scale the point cloud
+        training: bool, training or evaluation
+        dist: bool, distributed training or not
+
+    Returns:
+        Tuple[Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], jnp.ndarray] : inputs, targets
+    """
 
     # generate keys
     fps_keys = random.split(fps_key, bs + 1)
@@ -223,6 +276,9 @@ def trainStep(
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     dist: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Train the model on a batch of data (supports distributed training)
+    """
 
     # Define the loss function
     def loss_fn(params):
@@ -273,6 +329,9 @@ def evalStep(
     state: DualOptTrainState,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
 ) -> jnp.ndarray:
+    """
+    Evaluate the model on a batch of data
+    """
 
     (
         pts,
@@ -303,6 +362,18 @@ def evalStep(
 def getIOU(
     logits: np.ndarray, targets: np.ndarray
 ) -> Tuple[float, float, float, float, Dict[str, float]]:
+    """
+    Compute the accuracy metrics for the model,
+    importantly, each category is in a class, and only contrasted with the parts in that class.
+    So an airplane wing is not compared to a car wheel.
+
+    Args:
+        logits: np.ndarray, shape=(num_samples, num_points, num_classes)
+        targets: np.ndarray, shape=(num_samples, num_points)
+
+    Returns:
+        Tuple[float, float, float, float, Dict[str, float]] : accuracy, class_avg_accuracy, class_avg_iou, instance_avg_i
+    """
 
     total_seen = 0
     total_correct = 0

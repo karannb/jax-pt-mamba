@@ -1,8 +1,8 @@
 #!/bin/sh -x
 
 #SBATCH --job-name=port
-#SBATCH --account=eelsaisdc
-#SBATCH --partition=booster
+#SBATCH --account=<account>
+#SBATCH --partition=<partition>
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=02:20:00
@@ -13,8 +13,5 @@
 #SBATCH --error=logs/%j.err
 
 # Load the required modules and activate the virtual environment
-source ~/.bash_profile
-load_v1
-activate_jaxpm
 
-python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name droppath_fix
+python3 main.py --epochs 50 --d_model 64 --with_tracking --run_name _name_

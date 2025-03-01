@@ -9,6 +9,9 @@ from flax.linen.fp8_ops import OVERWRITE_WITH_GRADIENT
 
 
 class DualOptTrainState(struct.PyTreeNode):
+    """
+    Need two optimizers to fully simulate the original scheduler used in torch.
+    """
     step: int | jax.Array
     apply_fn: Callable = struct.field(pytree_node=False)
     params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)

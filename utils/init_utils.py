@@ -1,3 +1,8 @@
+"""
+This is needed because Mamba has a particular type of initialization for particular blocks
+and layers.
+"""
+
 import jax
 import math
 import flax

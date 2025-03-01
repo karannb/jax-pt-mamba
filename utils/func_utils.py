@@ -232,24 +232,20 @@ class DropPathV2(nn.Module):
             output: Array
             The output tensor after applying drop path.
         """
-
-        if self.drop_prob == 0.0 or not training:
-            return x
-
-        # NOTE :  This is a hack because before vmap I don't have access to the
+        # NOTE: This is a hack because before vmap I don't have access to the
         # batch dimension. So, I am just taking a key from numpy random and
         # using it as the key for the drop path.
         # completely_random_key = np.random.randint(0, 100000, (1,))
         # dropPath_key = self.make_rng(completely_random_key[0])
-        # DOESN'T WORK!
+        # NOTE 2: DOESN'T WORK!
         # Solution: make a batched key object at the start and keep passing it.
-            
+
         if self.drop_prob > 0.0 and drop_key is None:
             raise ValueError("DropPathV2 requires a PRNGKey to be passed.")
         
         if self.drop_prob == 0.0 or not training:
             return x
-        
+
         else:
             keep_prob = 1 - self.drop_prob
             drop = random.uniform(drop_key, (1,), dtype=x.dtype) > keep_prob
@@ -277,9 +273,7 @@ class Identity(nn.Module):
         >>> output = m(input)
         >>> print(output.size())
         torch.Size([128, 20])
-
     """
-
     @nn.compact
     def __call__(self, input: Array, *args, **kwargs) -> Array:
         """
@@ -294,7 +288,6 @@ class RMSNorm(nn.Module):
     Taken from https://github.com/radarFudan/mamba-minimal-jax/blob/main/model.py#L344
     as is.
     """
-
     d_model: int
     eps: float = 1e-5
 
